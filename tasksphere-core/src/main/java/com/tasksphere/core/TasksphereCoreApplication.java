@@ -1,46 +1,32 @@
 package com.tasksphere.core;
 
-import com.tasksphere.core.service.TaskManager;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.Bean;
 
 /*
- * @SpringBootApplication : Annotation "Superpowers" qui combine :
- * - @Configuration : Dit que cette classe est une source de configuration.
- * - @EnableAutoConfiguration : Configure automatiquement Spring en fonction des dépendances (Lombok, etc.).
- * - @ComponentScan : Dit à Spring de fouiller le package "com.tasksphere.core" pour trouver les @Service.
+ * @SpringBootApplication est une "Méta-annotation".
+ * C'est équivalent à coller ces 3 annotations au-dessus de la classe :
+ *
+ * 1. @Configuration : Indique que cette classe est une source de définitions de Beans.
+ * 2. @EnableAutoConfiguration : Dit à Spring : "Devine ce dont j'ai besoin en fonction des dépendances Maven".
+ *    -> IL A DÉTECTÉ spring-boot-starter-web DANS LE POM.XML !
+ *    -> IL S'EST DIT : "AH ! ON FAIT DU WEB ! JE VAIS DÉMARRER UN SERVEUR TOMCAT SUR LE PORT 8080 !"
+ * 3. @ComponentScan : "Fouille le package com.tasksphere.core et ses sous-packages".
+ *    -> IL A TROUVÉ @Service (TaskManager) -> IL LE CRÉE.
+ *    -> IL A TROUVÉ @RestController (TaskController) -> IL L'ENREGISTRE COMME ROUTE WEB.
  */
-@Slf4j
 @SpringBootApplication
 public class TasksphereCoreApplication {
 
-    public static void main(String[] args) {
-        // Ici, on lance le Conteneur Spring IoC. À partir de ce moment, Spring "prend le contrôle".
-        SpringApplication.run(TasksphereCoreApplication.class, args);
-    }
-
     /*
-     * DESIGN PATTERN : Command Pattern (exécuté au démarrage)
-     * Ce Bean s'exécute automatiquement une fois que le Conteneur IoC a démarré.
-     * Regarde bien la méthode : elle demande un "TaskManager".
-     * On ne fait PAS "new TaskManager()". On le demande à Spring.
+     * Le point d'entrée absolu de Java (public static void main).
+     * Quand tu cliques sur "Play" dans IntelliJ, c'est cette ligne qui tourne.
+     *
+     * SpringApplication.run() fait deux choses gigantesques :
+     * 1. Elle crée le Conteneur IoC (crée les Beans, injecte les dépendances).
+     * 2. Elle démarre le serveur Tomcat intégré (qui commence à écouter le port 8080).
      */
-    @Bean
-    CommandLineRunner start(TaskManager taskManager) {
-        return args -> {
-            log.info("=== DÉMARRAGE DE TASKSPHERE V1 ===");
-
-            // Utilisation du service
-            taskManager.createTask("Initialiser l'architecture", "Mise en place Maven");
-            taskManager.createTask("Définir le Domain Model", "Création des Records");
-
-            log.info("--- AFFICHAGE DES TÂCHES ---");
-            taskManager.getAllTasks().forEach(task -> log.info("Tâche : {}", task));
-
-            log.info("=== FIN DU PROGRAMME ===");
-        };
+    public static void main(String[] args) {
+        SpringApplication.run(TasksphereCoreApplication.class, args);
     }
 }
