@@ -2,6 +2,7 @@ package com.tasksphere.core;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableAsync; // L'IMPORT MAGIQUE
 
 /*
  * @SpringBootApplication est une "Méta-annotation".
@@ -15,6 +16,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *    -> IL A TROUVÉ @Service (TaskManager) -> IL LE CRÉE.
  *    -> IL A TROUVÉ @RestController (TaskController) -> IL L'ENREGISTRE COMME ROUTE WEB.
  */
+
+/*
+ * @EnableAsync : Dit à Spring : "Crée un pool de Threads (ouvriers) en background
+ * prêt à exécuter les méthodes annotées @Async".
+ */
+@EnableAsync
 @SpringBootApplication
 public class TasksphereCoreApplication {
 
