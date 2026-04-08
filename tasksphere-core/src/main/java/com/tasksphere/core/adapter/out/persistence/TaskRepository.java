@@ -1,6 +1,5 @@
-package com.tasksphere.core.repository;
+package com.tasksphere.core.adapter.out.persistence;
 
-import com.tasksphere.core.entity.TaskEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
