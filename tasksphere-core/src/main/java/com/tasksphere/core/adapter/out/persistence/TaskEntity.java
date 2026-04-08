@@ -1,4 +1,4 @@
-package com.tasksphere.core.entity;
+package com.tasksphere.core.adapter.out.persistence;
 
 import jakarta.persistence.*; // ATTENTION : C'est "jakarta" en Spring Boot 3, plus "javax"
 

@@ -1,8 +1,7 @@
 package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.Task;
-import com.tasksphere.core.entity.TaskEntity;
-import com.tasksphere.core.repository.TaskRepository;
+import com.tasksphere.core.port.out.TaskPersistencePort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -10,40 +9,40 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+/*
+ * SERVICE METIER (CLEAN ARCHITECTURE)
+ *
+ * OBSERVE BIEN LES IMPORTS :
+ * Il n'y a PLUS AUCUN IMPORT VERS LE PACKAGE "entity" OU "repository" !
+ * Le Service est devenu "Aveugle" face à la base de données.
+ * Il ne connaît que son Domaine (Task) et son Contrat (TaskPersistencePort).
+ */
 @Slf4j
 @Service
-@RequiredArgsConstructor // Injecte TaskRepository automatiquement
+@RequiredArgsConstructor
 public class TaskManager {
 
-    // Plus de ArrayList ! On utilise le Repository (qui parle à la BDD)
-    private final TaskRepository taskRepository;
+    // On n'injecte plus le Repository technique, on injecte le Port (le contrat)
+    private final TaskPersistencePort persistencePort;
 
-    /*
-     * @Transactional : Concept avancé mais indispensable.
-     * Ça dit à Spring : "Ouvre une connexion à la base de données au début de cette méthode,
-     * et ferme-la (en validant ou en annulant) à la fin".
-     */
     @Transactional
     public Task createTask(String title, String description) {
-        log.info("Demande de création en BDD pour : {}", title);
+        log.info("SERVICE METIER : Début de la création de la tâche {}", title);
 
-        // 1. Conversion DTO/Domaine -> Entité (pour la BDD)
-        TaskEntity entity = new TaskEntity(title, description);
+        // Création de l'objet métier pur
+        Task taskToSave = Task.create(title, description);
 
-        // 2. Sauvegarde en BDD (le champ ID va se remplir tout seul grâce au @GeneratedValue)
-        TaskEntity savedEntity = taskRepository.save(entity);
+        log.info("SERVICE METIER : Demande au Port de sauvegarder (Peu importe comment)");
+        // Le Service ne sait pas si c'est du SQL, du MongoDB ou un fichier texte.
+        Task savedTask = persistencePort.save(taskToSave);
 
-        // 3. Conversion Entité -> Domaine (pour le reste de l'application)
-        return new Task(savedEntity.getId(), savedEntity.getTitle(), savedEntity.getDescription());
+        log.info("SERVICE METIER : Tâche sauvégardée avec succès. ID={}", savedTask.id());
+        return savedTask;
     }
 
-    @Transactional(readOnly = true) // Optimisation : on précise qu'on ne modifie pas la BDD
+    @Transactional(readOnly = true)
     public List<Task> getAllTasks() {
-        log.info("Récupération de toutes les tâches depuis la BDD");
-
-        // On récupère des Entités, et on les mappe une par une en objets Domaine
-        return taskRepository.findAll().stream()
-                .map(entity -> new Task(entity.getId(), entity.getTitle(), entity.getDescription()))
-                .toList();
+        log.info("SERVICE METIER : Demande au Port de récupérer toutes les tâches");
+        return persistencePort.findAll();
     }
 }
