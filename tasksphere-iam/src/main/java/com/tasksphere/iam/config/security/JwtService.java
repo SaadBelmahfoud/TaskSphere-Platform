@@ -1,4 +1,4 @@
-package com.tasksphere.core.config.security;
+package com.tasksphere.iam.config.security;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;

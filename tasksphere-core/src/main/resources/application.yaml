@@ -1,4 +1,6 @@
 spring:
+  application:
+    name: TaskSphere-Core
   datasource:
     url: jdbc:h2:mem:taskspheredb # Base de données en RAM (s'efface à l'arrêt)
     driver-class-name: org.h2.Driver

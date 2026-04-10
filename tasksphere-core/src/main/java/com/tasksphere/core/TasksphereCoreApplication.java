@@ -2,7 +2,8 @@ package com.tasksphere.core;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableAsync; // L'IMPORT MAGIQUE
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.scheduling.annotation.EnableAsync;
 
 /*
  * @SpringBootApplication est une "Méta-annotation".
@@ -21,8 +22,22 @@ import org.springframework.scheduling.annotation.EnableAsync; // L'IMPORT MAGIQU
  * @EnableAsync : Dit à Spring : "Crée un pool de Threads (ouvriers) en background
  * prêt à exécuter les méthodes annotées @Async".
  */
+/*
+ * EXPLICATION DES ANNOTATIONS :
+ *
+ * @SpringBootApplication : Dit "Je suis le point d'entrée", mais ne scanne QUE com.tasksphere.core.* par défaut.
+ *
+ * @ComponentScan(basePackages = {"com.tasksphere.core", "com.tasksphere.iam"}) :
+ * OVERRIDE DU COMPORTEMENT PAR DÉFAUT.
+ * On dit à Spring : "Sors de ton package core, et vas aussi scanner le package iam
+ * pour trouver les @Configuration, @Component, @Service qui s'y trouvent".
+ * C'est ce qui permet de lier les modules au démarrage.
+ *
+ * @EnableAsync : Toujours nécessaire pour notre V6, on le garde au niveau racine.
+ */
 @EnableAsync
 @SpringBootApplication
+@ComponentScan(basePackages = {"com.tasksphere.core", "com.tasksphere.iam"})
 public class TasksphereCoreApplication {
 
     /*
