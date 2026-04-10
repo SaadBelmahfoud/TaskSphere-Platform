@@ -1,6 +1,6 @@
-package com.tasksphere.core.controller;
+package com.tasksphere.iam.adapter.in;
 
-import com.tasksphere.core.config.security.JwtService;
+import com.tasksphere.iam.config.security.JwtService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
