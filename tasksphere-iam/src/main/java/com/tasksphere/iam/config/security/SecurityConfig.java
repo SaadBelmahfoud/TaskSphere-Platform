@@ -40,7 +40,7 @@ public class SecurityConfig {
 
                 // 3. LES RÈGLES D'ACCÈS (Les Authorization Rules)
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/v1/auth/**").permitAll() // Le point d'entrée est OUVERT à tous
+                        .requestMatchers("/api/v1/auth/**","/api/v1/iam/**").permitAll() // Le point d'entrée est OUVERT à tous
                         .anyRequest().authenticated()               // TOUT LE RESTE nécessite un token valide
                 )
 
