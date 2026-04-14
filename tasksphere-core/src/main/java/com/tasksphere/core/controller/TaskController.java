@@ -3,79 +3,122 @@ package com.tasksphere.core.controller;
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.dto.TaskCreateRequest;
 import com.tasksphere.core.dto.TaskResponse;
-import com.tasksphere.core.service.TaskManager; // Le contrôleur parle au Service, JAMAIS au Domaine
+import com.tasksphere.core.service.TaskManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
 import java.util.List;
 
 /*
- * @RestController : Annotation MAGIQUE.
- * Elle dit à Spring : "Quand tu vois cette classe, je veux que ses méthodes
- * répondent à des requêtes HTTP, et que les objets renvoyés soient automatiquement
- * transformés en JSON".
+ * ====================================================================
+ * LE CONTRÔLEUR REST (La Porte d'Entrée de l'API)
+ * ====================================================================
+ *
+ * RÔLE ARCHITECTURAL :
+ * Le contrôleur est le "Standardiste" de l'application. Il ne doit JAMAIS contenir
+ * de logique métier (pas de if/else complexe, pas de calculs). Son seul but est de :
+ * 1. Extraire des données de la requête HTTP (JSON -> Java).
+ * 2. Déléguer au Service Métier.
+ * 3. Transformer la réponse Java en JSON.
+ *
+ * @Slf4j : Génère un logger pour tracer les requêtes réseau.
+ * @RestController : Dit à Spring "Les méthodes de cette classe renvoient du JSON, pas des pages HTML".
+ * @RequestMapping : Définit la racine de l'URL pour ce contrôleur.
+ * @RequiredArgsConstructor : Injecte les dépendances (ici, TaskManager) via le constructeur.
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/v1/tasks") // Définit l'URL de base de ce contrôleur
-@RequiredArgsConstructor // Annotation Lombok (voir explication dessous)
+@RequestMapping("/api/v1/tasks")
+@RequiredArgsConstructor
 public class TaskController {
 
-    // Dépendance. On a besoin du Chef (Service) pour travailler.
+    // Le Service Métier (Le Chef). Le contrôleur ne connaît que lui, pas la BDD, pas l'IAM.
     private final TaskManager taskManager;
 
     /*
-     * EXPLICATION DE @RequiredArgsConstructor (Lombok)
-     * Dans la V1, on avait écrit : public TaskManager() { ... }
-     * Ici, on ne met aucun constructeur. Mais on a mis l'attribut "final" devant taskManager.
-     * Lombok va voir ça, et GENERER AUTOMATIQUEMENT un constructeur avec taskManager en paramètre.
-     * Spring IoC (qu'on a vu en V1) va intercepter ce constructeur et injecter le vrai Service.
-     * Avantage : 0 ligne de code boilerplate, et on garde l'injection par constructeur (Best Practice).
-     */
-
-    /*
-     * ANNOTATIONS HTTP :
-     * @PostMapping : Réagit UNIQUEMENT aux requêtes HTTP de type POST (création).
-     * @RequestBody : Magie de Spring. Il va lire le corps de la requête HTTP (le JSON envoyé
-     * par le client), et le transformer TOUT SEUL en objet Java TaskCreateRequest.
+     * ====================================================================
+     * ENDPOINT : CRÉATION D'UNE TÂCHE (Méthode HTTP POST)
+     * ====================================================================
+     *
+     * @PostMapping : Lie cette méthode aux requêtes HTTP de type POST sur l'URL /api/v1/tasks.
+     * @RequestBody : Magie de Spring. Il lit le corps de la requête HTTP (le JSON envoyé par le client),
+     *                et le transforme automatiquement en objet Java (TaskCreateRequest).
+     *
+     * NOUVEAUTÉ V8 : @AuthenticationPrincipal
+     * Quand la requête passe à travers le filtre JWT (JwtAuthenticationFilter de la V5),
+     * Spring Security "authenticate" l'utilisateur et crée un objet Authentication.
+     * En mettant cette annotation, Spring nous INJECTE directement cet objet dans la méthode.
+     * Cela nous évite de devoir re-décoder le Token JWT manuellement pour savoir qui parle !
      */
     @PostMapping
-    public ResponseEntity<TaskResponse> createTask(@RequestBody TaskCreateRequest request) {
-        log.info("Reçu demande de création pour : {}", request.title());
+    public ResponseEntity<TaskResponse> createTask(
+            @RequestBody TaskCreateRequest request,
+            Authentication authentication) { // On utilise l'interface de base, c'est plus souple
 
-        // 1. Le serveur demande au chef de créer le plat (Domaine)
-        Task createdTask = taskManager.createTask(request.title(), request.description());
+        log.info("CONTROLEUR : Requête POST reçue pour créer la tâche : {}", request.title());
 
-        // 2. Le serveur met le plat sur un plateau (DTO)
+        // -------------------------------------------------------------
+        // 1. EXTRACTION DU CONTEXTE SÉCURITÉ (V8)
+        // -------------------------------------------------------------
+        // L'objet Authentication contient tout ce que le filtre JWT a mis dedans.
+        // .getName() retourne le "subject" du Token (dans notre cas, le username "saadoune").
+        String currentUsername = authentication.getName();
+        log.debug("CONTROLEUR : Demande initiée par l'utilisateur authentifié : {}", currentUsername);
+
+        // -------------------------------------------------------------
+        // 2. DÉLÉGATION AU SERVICE MÉTIER
+        // -------------------------------------------------------------
+        // On passe maintenant le username au Service. Le contrôleur s'en fiche de ce que
+        // le Service va en faire (s'il va chercher en BDD, appeler l'IAM, etc.). Il délègue.
+        Task createdTask = taskManager.createTask(
+                request.title(),
+                request.description(),
+                currentUsername // On passe l'identité à la couche métier !
+        );
+
+        // -------------------------------------------------------------
+        // 3. PRÉPARATION DE LA RÉPONSE HTTP
+        // -------------------------------------------------------------
+        // On traduit l'objet Domaine (Task) en DTO de sortie (TaskResponse) pour le client.
         TaskResponse response = TaskResponse.fromDomain(createdTask);
 
-        // 3. Le serveur apporte le plateau au client avec un ticket (ResponseEntity)
-        // Pourquoi ResponseEntity ? Pour contrôler le code HTTP.
-        // Un POST qui crée quelque chose doit renvoyer "201 Created", pas "200 OK".
-        // On lui donne aussi l'URL du nouvel objet créé (Best Practice REST absolue).
+        // -------------------------------------------------------------
+        // 4. CONSTRUCTION DE LA RÉPONSE REST
+        // -------------------------------------------------------------
+        // ResponseEntity permet de contrôler le code HTTP exact.
+        // 201 Created : Le standard REST quand on crée une ressource avec succès.
+        // URI.create(...) : On renvoie l'URL exacte de la nouvelle ressource dans le Header "Location".
         return ResponseEntity
                 .created(URI.create("/api/v1/tasks/" + response.id()))
                 .body(response);
     }
 
     /*
-     * @GetMapping : Réagit aux requêtes HTTP GET (lecture). Pas besoin de @RequestBody
-     * car on ne lit pas de JSON envoyé par le client, on lui donne des données.
+     * ====================================================================
+     * ENDPOINT : LECTURE DE TOUTES LES TÂCHES (Méthode HTTP GET)
+     * ====================================================================
+     *
+     * Ici, pas besoin de lire le corps de la requête.
+     * Si on voulait sécuriser cet endpoint pour les admins uniquement, on ajouterait
+     * une annotation @PreAuthorize("hasRole('ADMIN')") au-dessus de la méthode.
      */
     @GetMapping
     public ResponseEntity<List<TaskResponse>> getAllTasks() {
-        log.info("Reçu demande de listing");
+        log.info("CONTROLEUR : Requête GET reçue pour lister les tâches");
 
-        // On récupère la liste du Domaine, et on utilise l'API Stream de Java pour
-        // convertir chaque "Task" en "TaskResponse" un par un.
-        List<TaskResponse> responses = taskManager.getAllTasks().stream()
-                .map(TaskResponse::fromDomain) // Équivalent de : task -> TaskResponse.fromDomain(task)
+        // Délégation au Service
+        List<Task> tasks = taskManager.getAllTasks();
+
+        // Traduction Domaine -> DTO
+        List<TaskResponse> responses = tasks.stream()
+                .map(TaskResponse::fromDomain)
                 .toList();
 
-        // Pas de .created() ici, juste .ok() qui renvoie un code 200 OK avec la liste dans le corps.
+        // 200 OK : La requête a réussi et on retourne la liste.
         return ResponseEntity.ok(responses);
     }
 }
