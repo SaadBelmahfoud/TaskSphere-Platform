@@ -30,7 +30,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 })
 // Force Hibernate à scanner les classes @Entity dans ces deux packages spécifiques
 @EntityScan(basePackages = {
-        "com.tasksphere.core.domain", // Pour TaskEntity
+        "com.tasksphere.core.adapter.out.persistence", // Pour TaskEntity
         "com.tasksphere.iam.domain"  // Pour UserEntity
 })
 public class TasksphereCoreApplication {
