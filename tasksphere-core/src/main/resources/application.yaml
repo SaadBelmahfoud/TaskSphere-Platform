@@ -2,14 +2,21 @@ spring:
   application:
     name: TaskSphere-Core
   datasource:
-    url: jdbc:h2:mem:taskspheredb # Base de données en RAM (s'efface à l'arrêt)
+    url: jdbc:h2:mem:taskspheredb
     driver-class-name: org.h2.Driver
   jpa:
     hibernate:
-      ddl-auto: update # Dit à Hibernate de créer les tables tout seul en lisant le code
-    show-sql: true # Affiche les requêtes SQL dans la console (SUPER IMPORTANT POUR APPRENDRE)
+      ddl-auto: update
+    show-sql: true
   h2:
     console:
-      enabled: true # Active une interface web pour voir la base de données
+      enabled: true
+      settings:
+        web-allow-others: true
+
+# Configuration JWT (optionnel en dev, obligatoire en prod)
+jwt:
+  secret: tasksphere-super-secret-key-change-in-production
+
 server:
   port: 8080

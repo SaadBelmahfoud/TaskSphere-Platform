@@ -6,12 +6,19 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 /*
- * L'ENTITÉ DE L'IDENTITÉ.
- * ATTENTION : Ce n'est PAS le même concept que le DTO UserInfo du module Core !
- * C'est la représentation exacte de la table SQL.
+ * ====================================================================
+ * ENTITÉ UTILISATEUR (Représentation exacte de la table SQL "iam_users")
+ * ====================================================================
+ *
+ * PRINCIPE JPA :
+ * Chaque champ annoté @Column correspond à une colonne SQL.
+ * @Entity dit à Hibernate : "Crée/mets à jour la table SQL pour qu'elle corresponde à cette classe".
+ *
+ * SPRING 3 = JAKARTA :
+ * On utilise jakarta.persistence.* (pas javax.*). C'est une rupture obligatoire depuis Spring Boot 3.
  */
 @Entity
-@Table(name = "iam_users") // Nom de table spécifique pour ne pas conflituer avec le module Core
+@Table(name = "iam_users")
 @Getter
 @NoArgsConstructor
 @AllArgsConstructor
@@ -22,12 +29,27 @@ public class UserEntity {
     @Column(length = 36)
     private String id;
 
-    @Column(nullable = false, unique = true) // L'username doit être unique en base
+    @Column(nullable = false, unique = true)
     private String username;
 
-    @Column(nullable = false)
-    private String password; // Stockera le hash BCrypt, jamais le mot de passe en clair !
+    @Column(nullable = false, unique = true)
+    private String email;
 
     @Column(nullable = false)
-    private String role;
+    private String password; // Toujours un hash BCrypt, JAMAIS le mot de passe en clair !
+
+    @Column(nullable = false)
+    private String role; // "USER", "MANAGER" ou "ADMIN"
+
+    @Column
+    private String firstName;
+
+    @Column
+    private String lastName;
+
+    @Column
+    private String avatarUrl;
+
+    @Column(nullable = false)
+    private Boolean enabled = true;
 }

@@ -8,30 +8,29 @@ import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.scheduling.annotation.EnableAsync;
 
 /*
- * LE POINT D'ENTRÉ PRINCIPAL.
+ * ====================================================================
+ * POINT D'ENTRÉE PRINCIPAL (Main class)
+ * ====================================================================
  *
- * Dans un Monolithe Modulaire, ce fichier est le "Chef d'Orchestre".
- * Même si on a séparé le code en modules, au moment du démarrage, tout est réuni ici.
+ * PRINCIPE MONOLITHE MODULAIRE :
+ * Toutes les configurations de scan sont centralisées ici.
+ * C'est nécessaire car on a un seul ApplicationContext pour tous les modules.
  *
- * COMBIENÇON DE TECH LEAD : Ne JAMAIS laisser un sous-module gérer sa propre configuration JPA globale.
- * On déclare TOUT ici pour s'assurer qu'Hibernate voit toutes les tables et tous les repositories,
- * peu importe dans quel module ils sont physiquement situés.
+ * SPRINT 1 : Ajout du scan pour RefreshTokenEntity.
  */
 @EnableAsync
 @SpringBootApplication
 @ComponentScan(basePackages = {
-        "com.tasksphere.core",   // Scan le module Core
-        "com.tasksphere.iam"      // Scan le module IAM
+        "com.tasksphere.core",
+        "com.tasksphere.iam"
 })
-// Force Spring Data à scanner les interfaces Repository dans ces deux packages spécifiques
 @EnableJpaRepositories(basePackages = {
-        "com.tasksphere.core.adapter.out.persistence", // Pour TaskRepository
-        "com.tasksphere.iam.port.out"               // Pour UserRepository
+        "com.tasksphere.core.adapter.out.persistence",
+        "com.tasksphere.iam.port.out"
 })
-// Force Hibernate à scanner les classes @Entity dans ces deux packages spécifiques
 @EntityScan(basePackages = {
-        "com.tasksphere.core.adapter.out.persistence", // Pour TaskEntity
-        "com.tasksphere.iam.domain"  // Pour UserEntity
+        "com.tasksphere.core.adapter.out.persistence",
+        "com.tasksphere.iam.domain"
 })
 public class TasksphereCoreApplication {
     public static void main(String[] args) {

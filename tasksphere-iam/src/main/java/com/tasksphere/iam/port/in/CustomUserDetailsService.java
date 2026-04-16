@@ -4,17 +4,20 @@ import com.tasksphere.iam.domain.UserEntity;
 import com.tasksphere.iam.port.out.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.core.userdetails.User;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.*;
 import org.springframework.stereotype.Service;
 
-/*
- * LE VRAI SERVICE DE SÉCURITÉ.
- * Il implémente l'interface standard de Spring Security.
- * Spring Security appellera automatiquement la méthode loadUserByUsername()
- * quand le JwtAuthenticationFilter demandera l'utilisateur.
+import java.util.List;
+
+/**
+ * Service d'authentification personnalisé pour Spring Security.
+ *
+ * Spring Security appelle loadUserByUsername() à chaque requête
+ * authentifiée pour vérifier l'utilisateur et récupérer ses droits.
+ *
+ * NOTE : "Username" dans Spring Security = identifiant de connexion.
+ * Dans notre cas, l'identifiant = l'email.
  */
 @Slf4j
 @Service
@@ -24,22 +27,35 @@ public class CustomUserDetailsService implements UserDetailsService {
     private final UserRepository userRepository;
 
     @Override
-    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
-        log.debug("IAM DB : Recherche de l'utilisateur '{}' dans la base de données...", username);
+    public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
+        log.debug("Chargement de l'utilisateur par email: {}", email);
 
-        UserEntity user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new UsernameNotFoundException("Utilisateur non trouvé en base : " + username));
+        // Rechercher par EMAIL (la méthode s'appelle loadUserByUsername
+        // par convention Spring, mais notre identifiant = email)
+        UserEntity user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new UsernameNotFoundException(
+                        "Utilisateur non trouvé avec l'email: " + email));
 
-        log.info("IAM DB : Utilisateur '{}' trouvé. Vérification du mot de passe par Spring Security...", username);
+        // Construire les autorités (rôles)
+        // role est un String ("USER", "MANAGER", "ADMIN"), pas un enum
+        // On ajoute le préfixe "ROLE_" requis par Spring Security
+        // pour que hasRole("USER") fonctionne correctement
+        List<SimpleGrantedAuthority> authorities = List.of(
+                new SimpleGrantedAuthority("ROLE_" + user.getRole())
+        );
 
-        // On construit l'objet User de Spring Security à partir de notre Entité.
-        // Spring va automatiquement comparer le mot de passe de la requête HTTP avec user.password (le hash BCrypt)
-        return User.builder()
-                .username(user.getUsername())
-                .password(user.getPassword()) // Le hash BCrypt stocké en base
-                .roles(user.getRole())        // Le rôle (ex: "ROLE_USER")
-                .accountLocked(false)
-                .credentialsExpired(false)
-                .build();
+        log.debug("Utilisateur trouvé: {} avec le rôle: {}", email, user.getRole());
+
+        // Retourner l'implémentation UserDetails de Spring Security
+        // enabled est un Boolean (wrapper) → Boolean.TRUE.equals() pour un null-safe check
+        return new org.springframework.security.core.userdetails.User(
+                user.getEmail(),
+                user.getPassword(),
+                Boolean.TRUE.equals(user.getEnabled()),
+                true,   // accountNonExpired
+                true,   // credentialsNonExpired
+                true,   // accountNonLocked
+                authorities
+        );
     }
 }
