@@ -44,6 +44,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/**").permitAll() // Le point d'entrée est OUVERT à tous
                         .requestMatchers("/h2-console/**").permitAll()  // Autorise H2
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll() // Autorise Swagger
+                        .requestMatchers("/api/v1/auth/**","/api/v1/iam/**").permitAll() // Le point d'entrée est OUVERT à tous
                         .anyRequest().authenticated()               // TOUT LE RESTE nécessite un token valide
                 )
 
