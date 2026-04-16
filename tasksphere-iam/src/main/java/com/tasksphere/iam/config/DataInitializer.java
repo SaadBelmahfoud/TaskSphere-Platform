@@ -24,7 +24,7 @@ public class DataInitializer implements CommandLineRunner {
             log.info("INIT DB IAM : La base est vide. Création de l'utilisateur par défaut...");
             String rawPassword = "password123";
             String encodedPassword = passwordEncoder.encode(rawPassword);
-            UserEntity admin = new UserEntity(null, "saadoune", encodedPassword, "ROLE_USER");
+            UserEntity admin = new UserEntity(null, "saadoune", encodedPassword, "USER");
             userRepository.save(admin);
             log.info("INIT DB IAM : Utilisateur 'saadoune' créé avec succès (Mot de passe hashé par BCrypt).");
         } else {

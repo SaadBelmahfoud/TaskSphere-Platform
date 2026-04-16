@@ -42,14 +42,20 @@ public class SecurityConfig {
                 // 3. LES RÈGLES D'ACCÈS (Les Authorization Rules)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/v1/auth/**").permitAll() // Le point d'entrée est OUVERT à tous
+                        .requestMatchers("/h2-console/**").permitAll()  // Autorise H2
+                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll() // Autorise Swagger
                         .anyRequest().authenticated()               // TOUT LE RESTE nécessite un token valide
                 )
+
+
 
                 // 4. INSÉRER NOTRE FILTRE CUSTOM.
                 //    On dit à Spring : "Avant d'exécuter ton filtre par défaut qui vérifie les mots de passe,
                 //    passe d'abord MON filtre à moi qui lit les JWT".
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
 
+                // Indispensable pour voir la console H2 dans les navigateurs modernes
+                .headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()));
         return http.build();
     }
 
