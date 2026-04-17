@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 /*
  * L'ADAPTATEUR DE PONT.
  * Il implémente le Port du Core, mais pour le faire, il utilise directement un Bean de IAM.
- * AUCUN APPEL HTTP. Juste un appel de méthode Java : iamQueryService.getUserRole()
+ * AUCUN APPEL HTTP. Juste un appel de méthode Java : iamQueryService.getUserRoleByEmail()
  */
 @Slf4j
 @Component
@@ -23,8 +23,11 @@ public class IamUserAdapter implements UserInformationPort {
     @Override
     public UserInfo getUserInfo(String username) {
         log.debug("ADAPTATEUR IAM : Appel direct en mémoire vers le module IAM pour {}", username);
-        // getUserRole() retourne Optional<String>, on déroule avec .orElse()
-        String role = iamQueryService.getUserRole(username).orElse("ROLE_UNKNOWN");
+
+        // ← CORRIGÉ : avant on appelait getUserRole(username) qui cherche par UUID
+        // Or username = email (venant du JWT subject), donc findById(email) ne trouvait rien.
+        // Maintenant on appelle getUserRoleByEmail(username) qui cherche par email.
+        String role = iamQueryService.getUserRoleByEmail(username).orElse("ROLE_UNKNOWN");
         return new UserInfo(username, role);
     }
 }

@@ -14,6 +14,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.util.Optional;
 
 /*
@@ -37,12 +38,29 @@ public class TaskManager {
     private final UserInformationPort userInformationPort;
 
     /**
-     * Créer une nouvelle tâche pour un utilisateur.
-     * Le titre est obligatoire, la description optionnelle.
-     * La priorité par défaut est MEDIUM, le statut TODO.
+     * Créer une nouvelle tâche pour un utilisateur (version simplifiée).
+     * Utilise les valeurs par défaut : priorité MEDIUM, pas de dueDate.
+     * Délègue à la version complète avec null pour priority et dueDate.
      */
     @Transactional
     public Task createTask(String title, String description, String currentUsername) {
+        return createTask(title, description, currentUsername, null, null);
+    }
+
+    /**
+     * Créer une nouvelle tâche pour un utilisateur (version complète).
+     * Le titre est obligatoire, la description optionnelle.
+     * La priorité et la dueDate sont optionnelles (valeurs par défaut si null).
+     *
+     * @param title          Titre de la tâche (obligatoire, validé par le controller)
+     * @param description    Description (optionnelle, normalisée en "" si null)
+     * @param currentUsername Username de l'utilisateur connecté (sert de userId)
+     * @param priority       Priorité ("LOW", "MEDIUM", "HIGH", "CRITICAL") ou null = MEDIUM
+     * @param dueDate        Date d'échéance ou null = pas de date
+     */
+    @Transactional
+    public Task createTask(String title, String description, String currentUsername,
+                           String priority, LocalDate dueDate) {
         log.info("SERVICE : Création de la tâche '{}' par {}", title, currentUsername);
 
         // Récupérer les infos utilisateur depuis le module IAM
@@ -55,13 +73,24 @@ public class TaskManager {
                 currentUsername // userId = username de l'utilisateur connecté
         );
 
+        // ← NOUVEAU : Appliquer la priorité si fournie (sinon garde MEDIUM par défaut)
+        if (priority != null && !priority.isBlank()) {
+            taskToSave = taskToSave.updatePriority(Task.TaskPriority.valueOf(priority));
+        }
+
+        // ← NOUVEAU : Appliquer la dueDate si fournie (sinon garde null par défaut)
+        if (dueDate != null) {
+            taskToSave = taskToSave.updateDueDate(dueDate);
+        }
+
         // Persister en BDD
         Task savedTask = persistencePort.save(taskToSave);
 
         // Publier l'événement de création (pour les listeners)
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
-        log.info("SERVICE : Tâche créée avec succès (id: {}, user: {})", savedTask.id(), currentUsername);
+        log.info("SERVICE : Tâche créée avec succès (id: {}, user: {}, priority: {})",
+                savedTask.id(), currentUsername, savedTask.priority());
         return savedTask;
     }
 
@@ -93,7 +122,7 @@ public class TaskManager {
     @Transactional
     public Optional<Task> updateTask(String taskId, String currentUsername,
                                      String title, String description,
-                                     String priority, java.time.LocalDate dueDate) {
+                                     String priority, LocalDate dueDate) {
         log.info("SERVICE : Mise à jour de la tâche {} par {}", taskId, currentUsername);
 
         // 1. Vérifier que la tâche existe et appartient à l'utilisateur

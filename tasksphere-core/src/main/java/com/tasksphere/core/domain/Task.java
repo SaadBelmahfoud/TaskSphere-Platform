@@ -71,7 +71,7 @@ public record Task(
         return new Task(
                 UUID.randomUUID().toString(),
                 title,
-                description,
+                description == null ? "" : description,    // ← NORMALISATION : null → ""
                 TaskStatus.TODO,      // Par défaut : à faire
                 TaskPriority.MEDIUM,   // Par défaut : priorité moyenne
                 null,                  // dueDate optionnelle

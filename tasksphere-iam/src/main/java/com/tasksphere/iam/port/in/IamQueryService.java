@@ -39,8 +39,21 @@ public interface IamQueryService {
     /**
      * Récupère le rôle d'un utilisateur avec le préfixe "ROLE_".
      * Exemple : retourne "ROLE_USER", "ROLE_MANAGER", "ROLE_ADMIN"
-     * @param userId l'ID de l'utilisateur
+     * @param userId l'ID de l'utilisateur (UUID)
      * @return Optional contenant le rôle avec préfixe si trouvé
      */
     Optional<String> getUserRole(String userId);
+
+    /**
+     * ← NOUVEAU — Récupère le rôle d'un utilisateur à partir de son email.
+     *
+     * Pourquoi cette méthode ?
+     * Le module Core reçoit le username (email) depuis le JWT (subject = email),
+     * mais les IDs en base sont des UUID. getUserRole(userId) ne marchait pas
+     * car on passait l'email à la place de l'UUID.
+     *
+     * @param email l'adresse email de l'utilisateur
+     * @return Optional contenant le rôle avec préfixe "ROLE_" si trouvé, Optional.empty() sinon
+     */
+    Optional<String> getUserRoleByEmail(String email);
 }

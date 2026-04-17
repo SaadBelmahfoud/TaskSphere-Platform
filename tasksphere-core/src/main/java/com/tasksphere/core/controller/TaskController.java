@@ -67,18 +67,23 @@ public class TaskController {
         String username = authentication.getName();
         log.info("CONTROLLER : POST /tasks — Création par {}", username);
 
-        Task created = taskManager.createTask(request.title(), request.description(), username);
+        // ← CORRIGÉ : on passe maintenant priority et dueDate au service
+        Task created = taskManager.createTask(
+                request.title(),
+                request.description(),
+                username,
+                request.priority(),   // ← NOUVEAU : "HIGH", "LOW", "CRITICAL" ou null = MEDIUM
+                request.dueDate()      // ← NOUVEAU : date d'échéance ou null
+        );
 
-        // Déterminer la priorité (celle demandée ou MEDIUM par défaut)
-        String priority = (request.priority() != null) ? request.priority() : "MEDIUM";
-
+        // ← CORRIGÉ : on utilise la valeur RÉELLEMENT sauvegardée (pas le request)
         TaskResponse response = new TaskResponse(
                 created.id(),
                 created.title(),
                 created.description(),
                 created.status().name(),
-                priority,
-                created.dueDate(),
+                created.priority().name(),     // ← CORRIGÉ : avant c'était request.priority() qui pouvait être null
+                created.dueDate(),              // ← CORRIGÉ : avant c'était toujours null car pas sauvegardé
                 created.completedAt(),
                 java.time.LocalDateTime.now(),
                 created.userId()

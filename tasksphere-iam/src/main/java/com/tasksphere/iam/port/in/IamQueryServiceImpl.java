@@ -70,13 +70,33 @@ public class IamQueryServiceImpl implements IamQueryService {
      * quand on utilise hasRole() dans les règles de sécurité.
      * Exemple : @PreAuthorize("hasRole('ADMIN')") vérifie "ROLE_ADMIN".
      *
-     * @param userId l'ID de l'utilisateur (String)
+     * @param userId l'ID de l'utilisateur (String, UUID)
      * @return Optional contenant le rôle avec préfixe si trouvé
      */
     @Override
     public Optional<String> getUserRole(String userId) {
         log.debug("Récupération du rôle pour l'utilisateur: {}", userId);
         return userRepository.findById(userId)
+                .map(user -> "ROLE_" + user.getRole());
+    }
+
+    /**
+     * ← NOUVEAU — Récupère le rôle d'un utilisateur à partir de son email.
+     *
+     * Pourquoi cette méthode existe ?
+     * Le JWT stocke le subject = email (pas l'UUID). Quand le module Core
+     * veut connaître le rôle de l'utilisateur connecté, il n'a que l'email.
+     * Chercher par findById(email) ne marcherait pas car l'email n'est pas un UUID.
+     *
+     * Cette méthode cherche directement par email via findByEmail().
+     *
+     * @param email l'email de l'utilisateur
+     * @return Optional contenant le rôle avec préfixe "ROLE_" si trouvé
+     */
+    @Override
+    public Optional<String> getUserRoleByEmail(String email) {
+        log.debug("Récupération du rôle par email: {}", email);
+        return userRepository.findByEmail(email)
                 .map(user -> "ROLE_" + user.getRole());
     }
 }
