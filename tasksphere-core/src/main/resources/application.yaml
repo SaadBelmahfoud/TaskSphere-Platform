@@ -20,3 +20,15 @@ jwt:
 
 server:
   port: 8080
+
+# ===== AJOUT : Configuration Springdoc / Swagger =====
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    try-it-out-enabled: true
+  api-docs:
+    path: /v3/api-docs
+    enabled: true
+  show-actuator: false
