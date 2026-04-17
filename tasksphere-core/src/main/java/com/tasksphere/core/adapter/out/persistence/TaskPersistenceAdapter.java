@@ -61,8 +61,9 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     @Override
     public void softDelete(String id) {
         log.debug("ADAPTATEUR JPA : Soft delete de la tâche {}", id);
+        // Utiliser le setter au lieu d'accéder directement au champ private
         taskRepository.findByIdAndDeletedAtIsNull(id).ifPresent(entity -> {
-            entity.deletedAt = java.time.LocalDateTime.now();
+            entity.setDeletedAt(java.time.LocalDateTime.now());
             taskRepository.save(entity);
         });
     }

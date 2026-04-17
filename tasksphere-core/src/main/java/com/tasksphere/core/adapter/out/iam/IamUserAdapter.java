@@ -23,7 +23,8 @@ public class IamUserAdapter implements UserInformationPort {
     @Override
     public UserInfo getUserInfo(String username) {
         log.debug("ADAPTATEUR IAM : Appel direct en mémoire vers le module IAM pour {}", username);
-        String role = iamQueryService.getUserRole(username);
+        // getUserRole() retourne Optional<String>, on déroule avec .orElse()
+        String role = iamQueryService.getUserRole(username).orElse("ROLE_UNKNOWN");
         return new UserInfo(username, role);
     }
 }

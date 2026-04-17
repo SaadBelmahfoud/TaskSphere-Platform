@@ -125,4 +125,43 @@ public class TaskEntity {
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public LocalDateTime getDeletedAt() { return deletedAt; }
     public String getUserId() { return userId; }
+
+    // ============ SETTERS ============
+    // Utilisés par l'adaptateur de persistance pour les mises à jour partielles.
+    // Chaque setter met aussi à jour updatedAt automatiquement.
+
+    public void setTitle(String title) {
+        this.title = title;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setStatus(Task.TaskStatus status) {
+        this.status = status;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setPriority(Task.TaskPriority priority) {
+        this.priority = priority;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setDueDate(LocalDate dueDate) {
+        this.dueDate = dueDate;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setCompletedAt(LocalDateTime completedAt) {
+        this.completedAt = completedAt;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setDeletedAt(LocalDateTime deletedAt) {
+        this.deletedAt = deletedAt;
+        this.updatedAt = LocalDateTime.now();
+    }
 }

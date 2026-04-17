@@ -14,7 +14,13 @@ import java.util.List;
  * On déclare uniquement l'interface + les signatures de méthodes.
  * Spring Data JPA génère AUTOMATIQUEMENT l'implémentation SQL à l'exécution.
  *
- * findByUserIdAndRevokedFalse(String userId) sera traduit en :
+ * CONVENTION DE NOMMAGE :
+ * Le nom de la méthode DOIT suivre la convention Spring Data :
+ * - findByXxx → SELECT * WHERE xxx = ?
+ * - findByXxxAndYyy → SELECT * WHERE xxx = ? AND yyy = ?
+ * - findByXxxFalse → SELECT * WHERE xxx = false
+ *
+ * Exemple : findByUserIdAndRevokedFalse(String userId) sera traduit en :
  * SELECT * FROM refresh_tokens WHERE user_id = ? AND revoked = false
  */
 @Repository
@@ -24,27 +30,25 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshTokenEntity
      * Récupère tous les tokens actifs (non révoqués) d'un utilisateur.
      * Utilisé pour la déconnexion (révoquer tous les tokens d'un user).
      *
-     * Convention Spring Data : "And" = WHERE ... AND ..., "False" = false
-     *
-     * @param userId l'ID de l'utilisateur
-     * @return liste des tokens actifs
+     * Convention : "And" = WHERE ... AND ..., "False" = valeur false du champ boolean
      */
     List<RefreshTokenEntity> findByUserIdAndRevokedFalse(String userId);
 
     /**
      * Supprime tous les tokens d'un utilisateur.
      * Utilisé lors de la suppression d'un compte.
-     *
-     * @param userId l'ID de l'utilisateur
      */
     void deleteByUserId(String userId);
 
     /**
-     * Récupère tous les tokens actifs (non révoqués et non expirés).
-     * Utilisé par RefreshTokenService pour chercher un token par hash BCrypt
-     * (on ne peut pas faire de recherche par hash directement en SQL).
+     * Récupère TOUS les tokens non révoqués (tous utilisateurs confondus).
      *
-     * @return liste de tous les tokens actifs
+     * Convention : findByRevokedFalse → SELECT * FROM refresh_tokens WHERE revoked = false
+     *
+     * Utilisé par RefreshTokenService pour chercher un token par hash BCrypt.
+     * On ne peut pas faire de recherche par hash BCrypt directement en SQL
+     * (BCrypt utilise un sel aléatoire à chaque hash), donc on récupère
+     * tous les tokens actifs et on vérifie le hash en Java avec passwordEncoder.matches().
      */
-    List<RefreshTokenEntity> findAllActiveTokens();
+    List<RefreshTokenEntity> findByRevokedFalse();
 }

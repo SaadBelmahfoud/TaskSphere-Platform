@@ -16,8 +16,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
-import java.time.LocalDate;
 import java.util.Map;
+import java.util.Optional;
 
 /*
  * ====================================================================
@@ -39,6 +39,12 @@ import java.util.Map;
  * PRINCIPE Authentication :
  * L'annotation du paramètre Authentication est remplie automatiquement par Spring Security
  * après que JwtAuthenticationFilter ait validé le JWT.
+ *
+ * NOTE SUR LE TYPAGE ResponseEntity<?> :
+ * Le wildcard "?" est nécessaire car certains endpoints retournent soit
+ * un TaskResponse (200 OK), soit un Map (404 NOT FOUND). Java ne sait pas
+ * unifier ces 2 types dans un Optional.map().orElse(), donc on utilise
+ * des if/else explicites à la place.
  */
 @Slf4j
 @RestController
@@ -135,10 +141,12 @@ public class TaskController {
         String username = authentication.getName();
         log.info("CONTROLLER : GET /tasks/{} — par {}", id, username);
 
-        return taskManager.getTaskById(id, username)
-                .map(task -> ResponseEntity.ok(TaskResponse.fromDomain(task)))
-                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("message", "Tâche non trouvée ou accès non autorisé")));
+        Optional<Task> taskOpt = taskManager.getTaskById(id, username);
+        if (taskOpt.isPresent()) {
+            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
     }
 
     /**
@@ -156,14 +164,16 @@ public class TaskController {
         String username = authentication.getName();
         log.info("CONTROLLER : PUT /tasks/{} — par {}", id, username);
 
-        return taskManager.updateTask(
-                        id, username,
-                        request.title(), request.description(),
-                        request.priority(), request.dueDate()
-                )
-                .map(task -> ResponseEntity.ok(TaskResponse.fromDomain(task)))
-                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("message", "Tâche non trouvée ou accès non autorisé")));
+        Optional<Task> taskOpt = taskManager.updateTask(
+                id, username,
+                request.title(), request.description(),
+                request.priority(), request.dueDate()
+        );
+        if (taskOpt.isPresent()) {
+            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
     }
 
     /**
@@ -189,10 +199,12 @@ public class TaskController {
                     .body(Map.of("message", "Statut invalide. Valeurs possibles : TODO, DOING, DONE"));
         }
 
-        return taskManager.updateTaskStatus(id, username, request.status())
-                .map(task -> ResponseEntity.ok(TaskResponse.fromDomain(task)))
-                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("message", "Tâche non trouvée ou accès non autorisé")));
+        Optional<Task> taskOpt = taskManager.updateTaskStatus(id, username, request.status());
+        if (taskOpt.isPresent()) {
+            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
     }
 
     /**
