@@ -1,24 +1,36 @@
 package com.tasksphere.core.port.out;
 
 import com.tasksphere.core.domain.Task;
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
+import java.util.Optional;
 
 /*
- * ARCHITECTURE HEXAGONALE : LE PORT SORTANT (OUTPUT PORT)
+ * ====================================================================
+ * PORT SORTANT : Persistance des tâches (Contrat du domaine)
+ * ====================================================================
  *
- * POURQUOI CETTE INTERFACE ?
- * C'est le contrat que notre logique métier exige pour sauvegarder des données.
- * Remarque cruciale : IL N'Y A AUCUNE IMPORT DE JPA, SQL, OU ENTITY ICI.
+ * PRINCIPE DDD (Domain-Driven Design) :
+ * Le domaine définit SON contrat. L'infrastructure (JPA, SQL) doit s'adapter.
+ * C'est l'inversion de dépendance : le domaine dicte ses besoins, l'adapter obéit.
  *
- * Le Domaine dicte ses règles au monde extérieur, et non l'inverse.
- * Si demain on change de BDD, cette interface NE BOUGERA PAS. Seul l'adaptateur changera.
+ * SPRINT 1 : Ajout de findById, update, et filtrage par utilisateur.
  */
 public interface TaskPersistencePort {
 
-    /*
-     * On utilise l'objet Domaine (Task) et non l'entité (TaskEntity).
-     * C'est la garantie que l'extérieur doit nous ramener du pur métier.
-     */
+    /** Sauvegarder une tâche (création ou mise à jour) */
     Task save(Task task);
-    List<Task> findAll();
+
+    /** Récupérer toutes les tâches actives d'un utilisateur avec pagination */
+    Page<Task> findByUserId(String userId, Pageable pageable);
+
+    /** Récupérer une tâche active par son ID */
+    Optional<Task> findById(String id);
+
+    /** Récupérer une tâche active par ID et par utilisateur (pour vérifier l'ownership) */
+    Optional<Task> findByIdAndUserId(String id, String userId);
+
+    /** Supprimer logiquement une tâche (soft delete) */
+    void softDelete(String id);
 }

@@ -2,103 +2,201 @@ package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.domain.event.TaskCreatedEvent;
-import com.tasksphere.core.dto.UserInfo;
 import com.tasksphere.core.port.out.EventPublisherPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import java.time.LocalDate;
+import java.util.Optional;
 
 /*
  * ====================================================================
- * SERVICE MÉTIER (Le Cœur du Domaine "Task")
+ * SERVICE MÉTIER : TASK (Le cœur du domaine)
  * ====================================================================
  *
- * @Slf4j : Génère un logger pour tracer le flux.
- * @Service : Dit à Spring "Je suis un Bean métier, gère ma vie".
- * @RequiredArgsConstructor : Génère un constructeur avec tous les attributs 'final'.
- *                          C'est la seule façon propre de faire de l'Injection de Dépendances.
+ * PRINCIPE CLEAN ARCHITECTURE :
+ * Le service ne connaît que des interfaces (Ports), jamais des implémentations.
+ * Il contient toute la logique métier mais aucune logique technique (JPA, HTTP...).
+ *
+ * SPRINT 1 : CRUD complet + ownership + changement de statut/priorité + soft delete.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TaskManager {
 
-    // ====================================================================
-    // DÉPENDANCES (Les Ports Sortants)
-    // ====================================================================
-    // Remarque comme on n'importe JAMAIS les classes des adaptateurs (ex: IamUserAdapter, TaskPersistenceAdapter).
-    // On ne dépend que d'interfaces (Ports). C'est le "D" de SOLID (Dependency Inversion).
-
     private final TaskPersistencePort persistencePort;
     private final EventPublisherPort eventPublisher;
-
-    /*
-     * NOUVEAUTÉ V8 : Le Port vers le module IAM.
-     * Grâce à l'Architecture Hexagonale, ce Service n'a aucune idée si l'information
-     * va venir d'un appel HTTP, d'une base de données, ou (comme c'est le cas ici) d'un
-     * appel direct en mémoire Java. Il est "aveugle" à l'infrastructure.
-     */
     private final UserInformationPort userInformationPort;
 
-    // ====================================================================
-    // MÉTHODES MÉTIER
-    // ====================================================================
-
     /**
-     * Création d'une nouvelle tâche.
-     *
-     * @param title Le titre de la tâche
-     * @param description La description
-     * @param requestedByUsername Le nom de l'utilisateur qui fait la demande (extrait du JWT par le Controller)
-     * @return La tâche créée, enrichie de son ID
+     * Créer une nouvelle tâche pour un utilisateur (version simplifiée).
+     * Utilise les valeurs par défaut : priorité MEDIUM, pas de dueDate.
+     * Délègue à la version complète avec null pour priority et dueDate.
      */
     @Transactional
-    public Task createTask(String title, String description, String requestedByUsername) {
-        log.info("SERVICE METIER : Début de la création de la tâche '{}' par {}", title, requestedByUsername);
+    public Task createTask(String title, String description, String currentUsername) {
+        return createTask(title, description, currentUsername, null, null);
+    }
 
-        // -------------------------------------------------------------
-        // ÉTAPE V8 : Enrichissement métier via le module IAM
-        // -------------------------------------------------------------
-        // On demande au Port d'aller chercher les infos de l'utilisateur.
-        // L'Adapter (IamUserAdapter) fera le pont en coulisses.
-        UserInfo userInfo = userInformationPort.getUserInfo(requestedByUsername);
+    /**
+     * Créer une nouvelle tâche pour un utilisateur (version complète).
+     * Le titre est obligatoire, la description optionnelle.
+     * La priorité et la dueDate sont optionnelles (valeurs par défaut si null).
+     *
+     * @param title          Titre de la tâche (obligatoire, validé par le controller)
+     * @param description    Description (optionnelle, normalisée en "" si null)
+     * @param currentUsername Username de l'utilisateur connecté (sert de userId)
+     * @param priority       Priorité ("LOW", "MEDIUM", "HIGH", "CRITICAL") ou null = MEDIUM
+     * @param dueDate        Date d'échéance ou null = pas de date
+     */
+    @Transactional
+    public Task createTask(String title, String description, String currentUsername,
+                           String priority, LocalDate dueDate) {
+        log.info("SERVICE : Création de la tâche '{}' par {}", title, currentUsername);
 
-        log.info("SERVICE METIER : Profil utilisateur récupéré -> Nom: {}, Rôle: {}",
-                userInfo.name(), userInfo.userRole());
+        // Récupérer les infos utilisateur depuis le module IAM
+        var userInfo = userInformationPort.getUserInfo(currentUsername);
 
-        // -------------------------------------------------------------
-        // ÉTAPE V1/V2 : Création de l'objet de valeur (Domaine pur)
-        // -------------------------------------------------------------
-        Task taskToSave = Task.create(title, description);
+        // Créer la tâche avec les valeurs par défaut
+        Task taskToSave = Task.create(
+                title,
+                description != null ? description : "",
+                currentUsername // userId = username de l'utilisateur connecté
+        );
 
-        // -------------------------------------------------------------
-        // ÉTAPE V3/V4 : Persistance via le Port de sortie BDD
-        // -------------------------------------------------------------
-        log.debug("SERVICE METIER : Demande de sauvegarde en BDD");
+        // ← NOUVEAU : Appliquer la priorité si fournie (sinon garde MEDIUM par défaut)
+        if (priority != null && !priority.isBlank()) {
+            taskToSave = taskToSave.updatePriority(Task.TaskPriority.valueOf(priority));
+        }
+
+        // ← NOUVEAU : Appliquer la dueDate si fournie (sinon garde null par défaut)
+        if (dueDate != null) {
+            taskToSave = taskToSave.updateDueDate(dueDate);
+        }
+
+        // Persister en BDD
         Task savedTask = persistencePort.save(taskToSave);
 
-        // -------------------------------------------------------------
-        // ÉTAPE V6 : Publication de l'événement de création
-        // -------------------------------------------------------------
-        TaskCreatedEvent event = TaskCreatedEvent.of(savedTask.id(), savedTask.title());
-        log.info("SERVICE METIER : Publication de l'événement de création");
-        eventPublisher.publishTaskCreated(event);
+        // Publier l'événement de création (pour les listeners)
+        eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
-        log.info("SERVICE METIER : Tâche créée avec succès. ID={}", savedTask.id());
+        log.info("SERVICE : Tâche créée avec succès (id: {}, user: {}, priority: {})",
+                savedTask.id(), currentUsername, savedTask.priority());
         return savedTask;
     }
 
     /**
-     * Récupération de toutes les tâches.
+     * Lister les tâches de l'utilisateur connecté avec pagination.
+     * Les tâches supprimées (soft delete) sont automatiquement exclues.
      */
     @Transactional(readOnly = true)
-    public List<Task> getAllTasks() {
-        log.info("SERVICE METIER : Demande au Port de récupérer toutes les tâches");
-        return persistencePort.findAll();
+    public Page<Task> getMyTasks(String currentUsername, int page, int size) {
+        log.info("SERVICE : Liste des tâches de {} (page: {}, size: {})", currentUsername, page, size);
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        return persistencePort.findByUserId(currentUsername, pageable);
+    }
+
+    /**
+     * Récupérer une tâche par son ID.
+     * Vérifie que la tâche appartient à l'utilisateur connecté (ownership).
+     */
+    @Transactional(readOnly = true)
+    public Optional<Task> getTaskById(String taskId, String currentUsername) {
+        log.info("SERVICE : Recherche tâche {} pour l'utilisateur {}", taskId, currentUsername);
+        return persistencePort.findByIdAndUserId(taskId, currentUsername);
+    }
+
+    /**
+     * Mettre à jour une tâche (titre, description, priorité, dueDate).
+     * Seul le propriétaire peut modifier sa tâche.
+     */
+    @Transactional
+    public Optional<Task> updateTask(String taskId, String currentUsername,
+                                     String title, String description,
+                                     String priority, LocalDate dueDate) {
+        log.info("SERVICE : Mise à jour de la tâche {} par {}", taskId, currentUsername);
+
+        // 1. Vérifier que la tâche existe et appartient à l'utilisateur
+        Task existingTask = persistencePort.findByIdAndUserId(taskId, currentUsername)
+                .orElse(null);
+
+        if (existingTask == null) {
+            log.warn("SERVICE : Tâche {} non trouvée ou non autorisée pour {}", taskId, currentUsername);
+            return Optional.empty();
+        }
+
+        // 2. Appliquer les modifications (seuls les champs non null sont modifiés)
+        Task updatedTask = existingTask;
+
+        if (title != null && !title.isBlank()) {
+            updatedTask = updatedTask.update(title, updatedTask.description());
+        }
+        if (description != null) {
+            updatedTask = updatedTask.update(updatedTask.title(), description);
+        }
+        if (priority != null) {
+            updatedTask = updatedTask.updatePriority(Task.TaskPriority.valueOf(priority));
+        }
+        if (dueDate != null) {
+            updatedTask = updatedTask.updateDueDate(dueDate);
+        }
+
+        // 3. Sauvegarder
+        Task savedTask = persistencePort.save(updatedTask);
+        log.info("SERVICE : Tâche {} mise à jour avec succès", taskId);
+        return Optional.of(savedTask);
+    }
+
+    /**
+     * Changer le statut d'une tâche (TODO → DOING → DONE).
+     * Si le nouveau statut est DONE, completedAt est automatiquement renseigné.
+     */
+    @Transactional
+    public Optional<Task> updateTaskStatus(String taskId, String currentUsername, String newStatus) {
+        log.info("SERVICE : Changement statut tâche {} → {} par {}", taskId, newStatus, currentUsername);
+
+        Task existingTask = persistencePort.findByIdAndUserId(taskId, currentUsername)
+                .orElse(null);
+
+        if (existingTask == null) {
+            log.warn("SERVICE : Tâche {} non trouvée ou non autorisée", taskId);
+            return Optional.empty();
+        }
+
+        Task.TaskStatus status = Task.TaskStatus.valueOf(newStatus);
+        Task updatedTask = existingTask.updateStatus(status);
+        Task savedTask = persistencePort.save(updatedTask);
+
+        log.info("SERVICE : Tâche {} → statut {} (completedAt: {})",
+                taskId, status, savedTask.completedAt());
+        return Optional.of(savedTask);
+    }
+
+    /**
+     * Supprimer (archiver) une tâche (soft delete).
+     * La tâche n'est pas supprimée en BDD, juste marquée comme archivée.
+     */
+    @Transactional
+    public boolean deleteTask(String taskId, String currentUsername) {
+        log.info("SERVICE : Suppression (soft delete) de la tâche {} par {}", taskId, currentUsername);
+
+        Optional<Task> task = persistencePort.findByIdAndUserId(taskId, currentUsername);
+        if (task.isEmpty()) {
+            log.warn("SERVICE : Tâche {} non trouvée ou non autorisée", taskId);
+            return false;
+        }
+
+        persistencePort.softDelete(taskId);
+        log.info("SERVICE : Tâche {} archivée avec succès", taskId);
+        return true;
     }
 }

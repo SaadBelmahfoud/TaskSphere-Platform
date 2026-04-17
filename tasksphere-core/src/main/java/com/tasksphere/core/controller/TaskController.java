@@ -2,33 +2,49 @@ package com.tasksphere.core.controller;
 
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.dto.TaskCreateRequest;
+import com.tasksphere.core.dto.TaskStatusRequest;
+import com.tasksphere.core.dto.TaskUpdateRequest;
 import com.tasksphere.core.dto.TaskResponse;
 import com.tasksphere.core.service.TaskManager;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
-import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /*
  * ====================================================================
- * LE CONTRÔLEUR REST (La Porte d'Entrée de l'API)
+ * CONTRÔLEUR REST : TASK (La porte d'entrée de l'API tâches)
  * ====================================================================
  *
- * RÔLE ARCHITECTURAL :
- * Le contrôleur est le "Standardiste" de l'application. Il ne doit JAMAIS contenir
- * de logique métier (pas de if/else complexe, pas de calculs). Son seul but est de :
- * 1. Extraire des données de la requête HTTP (JSON -> Java).
- * 2. Déléguer au Service Métier.
- * 3. Transformer la réponse Java en JSON.
+ * PRINCIPE REST :
+ * - GET /tasks → Lister (200 OK)
+ * - POST /tasks → Créer (201 Created)
+ * - GET /tasks/{id} → Détail (200 OK ou 404)
+ * - PUT /tasks/{id} → Modifier (200 OK ou 404)
+ * - PATCH /tasks/{id}/status → Changer statut (200 OK)
+ * - DELETE /tasks/{id} → Archiver (204 No Content)
  *
- * @Slf4j : Génère un logger pour tracer les requêtes réseau.
- * @RestController : Dit à Spring "Les méthodes de cette classe renvoient du JSON, pas des pages HTML".
- * @RequestMapping : Définit la racine de l'URL pour ce contrôleur.
- * @RequiredArgsConstructor : Injecte les dépendances (ici, TaskManager) via le constructeur.
+ * PRINCIPE @Valid :
+ * Déclenche la validation Jakarta (@NotBlank, @Size...) automatiquement.
+ * Si une validation échoue → 400 Bad Request avec les détails.
+ *
+ * PRINCIPE Authentication :
+ * L'annotation du paramètre Authentication est remplie automatiquement par Spring Security
+ * après que JwtAuthenticationFilter ait validé le JWT.
+ *
+ * NOTE SUR LE TYPAGE ResponseEntity<?> :
+ * Le wildcard "?" est nécessaire car certains endpoints retournent soit
+ * un TaskResponse (200 OK), soit un Map (404 NOT FOUND). Java ne sait pas
+ * unifier ces 2 types dans un Optional.map().orElse(), donc on utilise
+ * des if/else explicites à la place.
  */
 @Slf4j
 @RestController
@@ -36,89 +52,187 @@ import java.util.List;
 @RequiredArgsConstructor
 public class TaskController {
 
-    // Le Service Métier (Le Chef). Le contrôleur ne connaît que lui, pas la BDD, pas l'IAM.
     private final TaskManager taskManager;
 
-    /*
-     * ====================================================================
-     * ENDPOINT : CRÉATION D'UNE TÂCHE (Méthode HTTP POST)
-     * ====================================================================
-     *
-     * @PostMapping : Lie cette méthode aux requêtes HTTP de type POST sur l'URL /api/v1/tasks.
-     * @RequestBody : Magie de Spring. Il lit le corps de la requête HTTP (le JSON envoyé par le client),
-     *                et le transforme automatiquement en objet Java (TaskCreateRequest).
-     *
-     * NOUVEAUTÉ V8 : @AuthenticationPrincipal
-     * Quand la requête passe à travers le filtre JWT (JwtAuthenticationFilter de la V5),
-     * Spring Security "authenticate" l'utilisateur et crée un objet Authentication.
-     * En mettant cette annotation, Spring nous INJECTE directement cet objet dans la méthode.
-     * Cela nous évite de devoir re-décoder le Token JWT manuellement pour savoir qui parle !
+    /**
+     * ============================================================
+     * POST /api/v1/tasks — Créer une tâche
+     * ============================================================
      */
     @PostMapping
-    public ResponseEntity<TaskResponse> createTask(
-            @RequestBody TaskCreateRequest request,
-            Authentication authentication) { // On utilise l'interface de base, c'est plus souple
+    public ResponseEntity<?> createTask(
+            @Valid @RequestBody TaskCreateRequest request,
+            Authentication authentication) {
 
-        log.info("CONTROLEUR : Requête POST reçue pour créer la tâche : {}", request.title());
+        String username = authentication.getName();
+        log.info("CONTROLLER : POST /tasks — Création par {}", username);
 
-        // -------------------------------------------------------------
-        // 1. EXTRACTION DU CONTEXTE SÉCURITÉ (V8)
-        // -------------------------------------------------------------
-        // L'objet Authentication contient tout ce que le filtre JWT a mis dedans.
-        // .getName() retourne le "subject" du Token (dans notre cas, le username "saadoune").
-        String currentUsername = authentication.getName();
-        log.debug("CONTROLEUR : Demande initiée par l'utilisateur authentifié : {}", currentUsername);
-
-        // -------------------------------------------------------------
-        // 2. DÉLÉGATION AU SERVICE MÉTIER
-        // -------------------------------------------------------------
-        // On passe maintenant le username au Service. Le contrôleur s'en fiche de ce que
-        // le Service va en faire (s'il va chercher en BDD, appeler l'IAM, etc.). Il délègue.
-        Task createdTask = taskManager.createTask(
+        // ← CORRIGÉ : on passe maintenant priority et dueDate au service
+        Task created = taskManager.createTask(
                 request.title(),
                 request.description(),
-                currentUsername // On passe l'identité à la couche métier !
+                username,
+                request.priority(),   // ← NOUVEAU : "HIGH", "LOW", "CRITICAL" ou null = MEDIUM
+                request.dueDate()      // ← NOUVEAU : date d'échéance ou null
         );
 
-        // -------------------------------------------------------------
-        // 3. PRÉPARATION DE LA RÉPONSE HTTP
-        // -------------------------------------------------------------
-        // On traduit l'objet Domaine (Task) en DTO de sortie (TaskResponse) pour le client.
-        TaskResponse response = TaskResponse.fromDomain(createdTask);
+        // ← CORRIGÉ : on utilise la valeur RÉELLEMENT sauvegardée (pas le request)
+        TaskResponse response = new TaskResponse(
+                created.id(),
+                created.title(),
+                created.description(),
+                created.status().name(),
+                created.priority().name(),     // ← CORRIGÉ : avant c'était request.priority() qui pouvait être null
+                created.dueDate(),              // ← CORRIGÉ : avant c'était toujours null car pas sauvegardé
+                created.completedAt(),
+                java.time.LocalDateTime.now(),
+                created.userId()
+        );
 
-        // -------------------------------------------------------------
-        // 4. CONSTRUCTION DE LA RÉPONSE REST
-        // -------------------------------------------------------------
-        // ResponseEntity permet de contrôler le code HTTP exact.
-        // 201 Created : Le standard REST quand on crée une ressource avec succès.
-        // URI.create(...) : On renvoie l'URL exacte de la nouvelle ressource dans le Header "Location".
         return ResponseEntity
                 .created(URI.create("/api/v1/tasks/" + response.id()))
                 .body(response);
     }
 
-    /*
-     * ====================================================================
-     * ENDPOINT : LECTURE DE TOUTES LES TÂCHES (Méthode HTTP GET)
-     * ====================================================================
-     *
-     * Ici, pas besoin de lire le corps de la requête.
-     * Si on voulait sécuriser cet endpoint pour les admins uniquement, on ajouterait
-     * une annotation @PreAuthorize("hasRole('ADMIN')") au-dessus de la méthode.
+    /**
+     * ============================================================
+     * GET /api/v1/tasks — Lister MES tâches (paginées)
+     * ============================================================
+     * Query params : ?page=0&size=20
+     * Par défaut : page 0, taille 20
      */
     @GetMapping
-    public ResponseEntity<List<TaskResponse>> getAllTasks() {
-        log.info("CONTROLEUR : Requête GET reçue pour lister les tâches");
+    public ResponseEntity<?> getMyTasks(
+            Authentication authentication,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
 
-        // Délégation au Service
-        List<Task> tasks = taskManager.getAllTasks();
+        String username = authentication.getName();
+        log.info("CONTROLLER : GET /tasks — Liste pour {} (page: {}, size: {})", username, page, size);
 
-        // Traduction Domaine -> DTO
-        List<TaskResponse> responses = tasks.stream()
-                .map(TaskResponse::fromDomain)
+        // Limiter la taille de page à 100 maximum
+        if (size > 100) size = 100;
+
+        Page<Task> taskPage = taskManager.getMyTasks(username, page, size);
+
+        var content = taskPage.getContent().stream()
+                .map(task -> new TaskResponse(
+                        task.id(), task.title(), task.description(),
+                        task.status().name(), task.priority().name(),
+                        task.dueDate(), task.completedAt(), null, task.userId()
+                ))
                 .toList();
 
-        // 200 OK : La requête a réussi et on retourne la liste.
-        return ResponseEntity.ok(responses);
+        return ResponseEntity.ok(Map.of(
+                "content", content,
+                "totalElements", taskPage.getTotalElements(),
+                "totalPages", taskPage.getTotalPages(),
+                "number", taskPage.getNumber(),
+                "size", taskPage.getSize()
+        ));
+    }
+
+    /**
+     * ============================================================
+     * GET /api/v1/tasks/{id} — Détail d'une tâche
+     * ============================================================
+     * Seul le propriétaire peut voir sa tâche.
+     */
+    @GetMapping("/{id}")
+    public ResponseEntity<?> getTaskById(
+            @PathVariable String id,
+            Authentication authentication) {
+
+        String username = authentication.getName();
+        log.info("CONTROLLER : GET /tasks/{} — par {}", id, username);
+
+        Optional<Task> taskOpt = taskManager.getTaskById(id, username);
+        if (taskOpt.isPresent()) {
+            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
+    }
+
+    /**
+     * ============================================================
+     * PUT /api/v1/tasks/{id} — Modifier une tâche
+     * ============================================================
+     * Tous les champs sont optionnels. Seuls les champs fournis sont modifiés.
+     */
+    @PutMapping("/{id}")
+    public ResponseEntity<?> updateTask(
+            @PathVariable String id,
+            @RequestBody TaskUpdateRequest request,
+            Authentication authentication) {
+
+        String username = authentication.getName();
+        log.info("CONTROLLER : PUT /tasks/{} — par {}", id, username);
+
+        Optional<Task> taskOpt = taskManager.updateTask(
+                id, username,
+                request.title(), request.description(),
+                request.priority(), request.dueDate()
+        );
+        if (taskOpt.isPresent()) {
+            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
+    }
+
+    /**
+     * ============================================================
+     * PATCH /api/v1/tasks/{id}/status — Changer le statut
+     * ============================================================
+     * Body : { "status": "DOING" }
+     */
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<?> updateTaskStatus(
+            @PathVariable String id,
+            @Valid @RequestBody TaskStatusRequest request,
+            Authentication authentication) {
+
+        String username = authentication.getName();
+        log.info("CONTROLLER : PATCH /tasks/{}/status → {} par {}", id, request.status(), username);
+
+        // Valider que le statut est un enum valide
+        try {
+            Task.TaskStatus.valueOf(request.status());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Statut invalide. Valeurs possibles : TODO, DOING, DONE"));
+        }
+
+        Optional<Task> taskOpt = taskManager.updateTaskStatus(id, username, request.status());
+        if (taskOpt.isPresent()) {
+            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        }
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
+    }
+
+    /**
+     * ============================================================
+     * DELETE /api/v1/tasks/{id} — Archiver (soft delete)
+     * ============================================================
+     * 204 No Content = succès sans corps de réponse.
+     */
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> deleteTask(
+            @PathVariable String id,
+            Authentication authentication) {
+
+        String username = authentication.getName();
+        log.info("CONTROLLER : DELETE /tasks/{} — par {}", id, username);
+
+        boolean deleted = taskManager.deleteTask(id, username);
+
+        if (!deleted) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
+        }
+
+        return ResponseEntity.noContent().build();
     }
 }
