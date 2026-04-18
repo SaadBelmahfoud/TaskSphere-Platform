@@ -2,6 +2,7 @@ package com.tasksphere.core.adapter.out.persistence;
 
 import com.tasksphere.core.domain.Task;
 import jakarta.persistence.*;
+import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -27,13 +28,18 @@ import java.time.LocalDateTime;
  * On stocke l'enum comme texte ("TODO") et pas comme ordinal (0, 1, 2).
  * Pourquoi ? Si on ajoute une valeur au milieu de l'enum, les ordinaux changent
  * et toutes les données existantes seraient corrompues.
+ *
+ * PRINCIPE Persistable<String> :
+ * L'UUID est pré-généré dans le domaine (Task.create → UUID.randomUUID).
+ * Sans Persistable, Spring Data voit un ID non-null et pense que l'entité
+ * est déjà en base → il fait un merge() au lieu de persist() → crash.
+ * Persistable.isNew() indique explicitement si c'est une nouvelle entité.
  */
 @Entity
 @Table(name = "tasks")
-public class TaskEntity {
+public class TaskEntity implements Persistable<String> {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
     @Column(length = 36)
     private String id;
 
@@ -69,12 +75,21 @@ public class TaskEntity {
     @Column(nullable = false, length = 36)
     private String userId;
 
+    /**
+     * Flag transient pour indiquer à Spring Data JPA si c'est une nouvelle entité.
+     * - true  : → repository.save() fera un em.persist()  (INSERT)
+     * - false : → repository.save() fera un em.merge()    (UPDATE)
+     */
+    @Transient
+    private boolean isNew = true;
+
     // ============ CONSTRUCTEURS ============
 
     /** Constructeur vide obligatoire pour JPA (crée un objet depuis les rows SQL) */
     protected TaskEntity() {
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
+        this.isNew = false;
     }
 
     /** Constructeur pour créer une nouvelle tâche depuis le domaine */
@@ -90,6 +105,26 @@ public class TaskEntity {
         this.userId = task.userId();
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
+        this.isNew = true;
+    }
+
+    // ============ Persistable<String> ============
+
+    @Override
+    public String getId() {
+        return id;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    /** Après INSERT en base, l'entité n'est plus "nouvelle" */
+    @PostPersist
+    @PostLoad
+    private void markNotNew() {
+        this.isNew = false;
     }
 
     // ============ CONVERSION VERS DOMAINE ============
@@ -114,7 +149,6 @@ public class TaskEntity {
 
     // ============ GETTERS ============
 
-    public String getId() { return id; }
     public String getTitle() { return title; }
     public String getDescription() { return description; }
     public Task.TaskStatus getStatus() { return status; }

@@ -8,6 +8,7 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: true
+    open-in-view: false
   h2:
     console:
       enabled: true
@@ -21,7 +22,7 @@ jwt:
 server:
   port: 8080
 
-# ===== AJOUT : Configuration Springdoc / Swagger =====
+# ===== Configuration Springdoc / Swagger =====
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
@@ -31,4 +32,3 @@ springdoc:
   api-docs:
     path: /v3/api-docs
     enabled: true
-  show-actuator: false
