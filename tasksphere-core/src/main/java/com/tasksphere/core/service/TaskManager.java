@@ -22,9 +22,23 @@ import java.util.Optional;
  * SERVICE MÉTIER : TASK (Le cœur du domaine)
  * ====================================================================
  *
- * PRINCIPE CLEAN ARCHITECTURE :
+ * PRINCIPE CLEAN ARCHITECTURE / HEXAGONALE :
  * Le service ne connaît que des interfaces (Ports), jamais des implémentations.
  * Il contient toute la logique métier mais aucune logique technique (JPA, HTTP...).
+ *
+ * PRINCIPE DDD (Domain-Driven Design) :
+ * Le service est le "Use Case" ou "Application Service".
+ * Il orchestre les interactions entre le domaine (Task), les ports entrants
+ * (Controller) et les ports sortants (Persistence, Events).
+ *
+ * DÉPENDANCES DU SERVICE :
+ * - TaskPersistencePort : pour sauvegarder/lire les tâches (port sortant)
+ * - EventPublisherPort : pour publier des événements (port sortant)
+ * - UserInformationPort : pour récupérer les infos utilisateur (port sortant)
+ *
+ * PRINCIPE @Transactional :
+ * - (readOnly = true) : optimisation Hibernate, pas de dirty checking
+ * - (par défaut) : ouvre une transaction, commit à la fin, rollback si exception
  *
  * SPRINT 1 : CRUD complet + ownership + changement de statut/priorité + soft delete.
  */
@@ -52,6 +66,13 @@ public class TaskManager {
      * Le titre est obligatoire, la description optionnelle.
      * La priorité et la dueDate sont optionnelles (valeurs par défaut si null).
      *
+     * PRINCIPE D'ENCHAÎNEMENT :
+     * 1. Récupérer les infos utilisateur (port IAM)
+     * 2. Créer la tâche avec Task.create() (factory method du domaine)
+     * 3. Appliquer les options (priority, dueDate) via les méthodes "with"
+     * 4. Persister en BDD (port persistance)
+     * 5. Publier l'événement de création (port events)
+     *
      * @param title          Titre de la tâche (obligatoire, validé par le controller)
      * @param description    Description (optionnelle, normalisée en "" si null)
      * @param currentUsername Username de l'utilisateur connecté (sert de userId)
@@ -66,27 +87,27 @@ public class TaskManager {
         // Récupérer les infos utilisateur depuis le module IAM
         var userInfo = userInformationPort.getUserInfo(currentUsername);
 
-        // Créer la tâche avec les valeurs par défaut
+        // Créer la tâche avec les valeurs par défaut du domaine
         Task taskToSave = Task.create(
                 title,
                 description != null ? description : "",
-                currentUsername // userId = username de l'utilisateur connecté
+                currentUsername
         );
 
-        // ← NOUVEAU : Appliquer la priorité si fournie (sinon garde MEDIUM par défaut)
+        // Appliquer la priorité si fournie (sinon garde MEDIUM par défaut du domaine)
         if (priority != null && !priority.isBlank()) {
             taskToSave = taskToSave.updatePriority(Task.TaskPriority.valueOf(priority));
         }
 
-        // ← NOUVEAU : Appliquer la dueDate si fournie (sinon garde null par défaut)
+        // Appliquer la dueDate si fournie (sinon garde null par défaut du domaine)
         if (dueDate != null) {
             taskToSave = taskToSave.updateDueDate(dueDate);
         }
 
-        // Persister en BDD
+        // Persister en BDD via le port de persistance
         Task savedTask = persistencePort.save(taskToSave);
 
-        // Publier l'événement de création (pour les listeners)
+        // Publier l'événement de création (pour les listeners / audit / notifications)
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
         log.info("SERVICE : Tâche créée avec succès (id: {}, user: {}, priority: {})",
@@ -97,6 +118,16 @@ public class TaskManager {
     /**
      * Lister les tâches de l'utilisateur connecté avec pagination.
      * Les tâches supprimées (soft delete) sont automatiquement exclues.
+     *
+     * PRINCIPE DE PAGINATION :
+     * PageRequest.of(page, size, sort) crée un objet Pageable avec :
+     * - page : index de la page (0-based)
+     * - size : nombre d'éléments par page
+     * - sort : ordre de tri (ici par createdAt descendant)
+     *
+     * PRINCIPE @Transactional(readOnly = true) :
+     * Optimisation Hibernate : pas de dirty checking, pas de snapshot des entités.
+     * Réduit la consommation mémoire pour les lectures.
      */
     @Transactional(readOnly = true)
     public Page<Task> getMyTasks(String currentUsername, int page, int size) {
@@ -108,6 +139,12 @@ public class TaskManager {
     /**
      * Récupérer une tâche par son ID.
      * Vérifie que la tâche appartient à l'utilisateur connecté (ownership).
+     *
+     * PRINCIPE D'OWNERSHIP (RBAC) :
+     * On utilise findByIdAndUserId() au lieu de findById() pour garantir
+     * que l'utilisateur ne peut accéder qu'à ses propres tâches.
+     * Si on utilisait findById(), n'importe quel utilisateur authentifié
+     * pourrait voir les tâches des autres (faille de sécurité).
      */
     @Transactional(readOnly = true)
     public Optional<Task> getTaskById(String taskId, String currentUsername) {
@@ -117,7 +154,12 @@ public class TaskManager {
 
     /**
      * Mettre à jour une tâche (titre, description, priorité, dueDate).
-     * Seul le propriétaire peut modifier sa tâche.
+     * Seul le propriétaire peut modifier sa tâche (ownership / RBAC).
+     *
+     * PRINCIPE DE MISE À JOUR PARTIELLE :
+     * Seuls les champs non null sont modifiés. Cela permet au client
+     * d'envoyer uniquement les champs qu'il veut modifier.
+     * C'est le pattern "Partial Update" (PATCH-like avec PUT).
      */
     @Transactional
     public Optional<Task> updateTask(String taskId, String currentUsername,
@@ -150,7 +192,7 @@ public class TaskManager {
             updatedTask = updatedTask.updateDueDate(dueDate);
         }
 
-        // 3. Sauvegarder
+        // 3. Sauvegarder via le port
         Task savedTask = persistencePort.save(updatedTask);
         log.info("SERVICE : Tâche {} mise à jour avec succès", taskId);
         return Optional.of(savedTask);
@@ -159,6 +201,10 @@ public class TaskManager {
     /**
      * Changer le statut d'une tâche (TODO → DOING → DONE).
      * Si le nouveau statut est DONE, completedAt est automatiquement renseigné.
+     *
+     * PRINCIPE D'AUTOMATISATION :
+     * Le domaine Task.updateStatus() gère automatiquement completedAt.
+     * Le service n'a pas besoin de le faire manuellement.
      */
     @Transactional
     public Optional<Task> updateTaskStatus(String taskId, String currentUsername, String newStatus) {
@@ -184,6 +230,10 @@ public class TaskManager {
     /**
      * Supprimer (archiver) une tâche (soft delete).
      * La tâche n'est pas supprimée en BDD, juste marquée comme archivée.
+     *
+     * PRINCIPE DU SOFT DELETE :
+     * - Avantages : traçabilité, restauration possible, intégrité référentielle
+     * - deletedAt est renseigné → la tâche est filtrée dans toutes les requêtes
      */
     @Transactional
     public boolean deleteTask(String taskId, String currentUsername) {

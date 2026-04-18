@@ -13,11 +13,32 @@ spring:
     console:
       enabled: true
       settings:
-        web-allow-others: true
+        # CORRECTION B9 : false = la console H2 n'est accessible que depuis localhost.
+        # AVANT : true = accessible depuis n'importe quelle IP (faille de sécurité).
+        # EN PRODUCTION : mettre spring.h2.console.enabled=false pour désactiver complètement.
+        web-allow-others: false
 
-# Configuration JWT (optionnel en dev, obligatoire en prod)
+# ====================================================================
+# Configuration JWT
+# ====================================================================
+# CORRECTION B1 : Le secret est maintenant configurable via variable d'environnement.
+#
+# SYNTAXE SPRING : ${VARIABLE_ENV:VALEUR_DEFAUT}
+# - Si la variable d'environnement JWT_SECRET existe → utilise cette valeur
+# - Sinon → utilise la valeur par défaut (pour le dev uniquement)
+#
+# EN PRODUCTION :
+#   export JWT_SECRET=votre-cle-secrete-de-256-bits-minimum
+#   bun run start (ou java -jar app.jar)
+#
+# EN DEV :
+#   Pas besoin de définir JWT_SECRET, la valeur par défaut est utilisée.
+#
+# ATTENTION : La clé doit faire au minimum 32 caractères (256 bits) pour HS256.
+# Si elle est plus courte, Keys.hmacShaKeyFor() lèvera une WeakKeyException au démarrage.
+# ====================================================================
 jwt:
-  secret: tasksphere-super-secret-key-change-in-production
+  secret: ${JWT_SECRET:tasksphere-dev-secret-key-change-me-in-production-256bits}
 
 server:
   port: 8080
