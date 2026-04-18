@@ -19,6 +19,22 @@ import java.time.LocalDate;
  * PRINCIPE @NotBlank vs @NotNull :
  * - @NotNull : ne peut pas être null (mais "" est accepté)
  * - @NotBlank : ne peut pas être null ET ne peut pas être vide ("" ou "  ")
+ * - @NotEmpty : ne peut pas être null ET ne peut pas être vide ("" accepte "  ")
+ *
+ * CHAÎNE DE VALIDATION :
+ * 1. Client envoie le JSON
+ * 2. Spring désérialise en TaskCreateRequest
+ * 3. @Valid déclenche la validation Jakarta
+ * 4. Si erreur → MethodArgumentNotValidException → 400 Bad Request
+ * 5. Si OK → le contrôleur reçoit un objet valide
+ *
+ * PRINCIPE DU RECORD COMME DTO D'ENTRÉE :
+ * Un record est parfait car le client envoie un JSON plat.
+ * Spring (Jackson) mappe automatiquement les champs JSON sur les paramètres du record.
+ *
+ * FLOW DE VALIDATION COMPLET :
+ * Client → JSON → Jackson (désérialisation) → @Valid (validation Jakarta)
+ * → Controller (objet valide) → Service (logique métier) → Repository (persistance)
  */
 public record TaskCreateRequest(
 
@@ -29,8 +45,21 @@ public record TaskCreateRequest(
         @Size(max = 5000, message = "La description ne peut pas dépasser 5000 caractères")
         String description,
 
-        String priority,   // "LOW", "MEDIUM", "HIGH", "CRITICAL" (optionnel, défaut = MEDIUM)
+        /**
+         * Priority optionnel : "LOW", "MEDIUM", "HIGH", "CRITICAL"
+         * Si null ou vide → la valeur par défaut (MEDIUM) sera appliquée par le service.
+         *
+         * NOTE : Pas d'annotation @Pattern ici car la validation de la valeur
+         * de l'enum est faite dans le service avec Task.TaskPriority.valueOf().
+         * On aurait pu utiliser @Pattern mais le message d'erreur serait moins clair.
+         */
+        String priority,
 
-        LocalDate dueDate  // Date d'échéance (optionnelle, pas de date passée)
+        /**
+         * Date d'échéance optionnelle.
+         * Si null → pas de date d'échéance.
+         * TODO (futur) : Ajouter @FutureOrPresent pour interdire les dates passées.
+         */
+        LocalDate dueDate
 ) {
 }
