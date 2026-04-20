@@ -4,31 +4,44 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-/*
- * ====================================================================
- * OBJET DE VALEUR : TASK (Le domaine pur)
- * ====================================================================
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ * AGGREGAT RACINE DU DOMAINE : Task (Tâche)
+ * ═══════════════════════════════════════════════════════════════════
  *
- * PRINCIPE D'IMMUABILITÉ :
- * Un record Java est immuable (pas de setters). Pour "modifier" une tâche,
- * on crée une NOUVELLE instance avec les nouvelles valeurs.
- * Cela évite les bugs de concurrence quand deux threads modifient le même objet.
+ * Ce record Java représente le cœur de notre modèle métier.
+ * Il est IMMUTABLE : chaque modification retourne une NOUVELLE instance.
+ * C'est le principe clé de la programmation fonctionnelle appliquée au DDD.
  *
- * PRINCIPE DU RECORD VS CLASSE :
- * Un record génère automatiquement : constructeur, getters (title()), equals(),
- * hashCode() et toString(). C'est idéal pour les objets de valeur immuables.
+ * POURQUOI UN RECORD ET PAS UNE CLASSE ?
+ * ────────────────────────────────────────
+ * 1. IMMUTABILITÉ : Un record ne peut pas être modifié après création.
+ *    → Pas d'effets de bord imprévus dans le code métier.
+ *    → Thread-safe par défaut (pas besoin de synchronized).
+ *    → Facile à tester : on crée un objet, on appelle une méthode,
+ *      on vérifie que l'objet retourné est correct.
  *
- * SPRINT 1 - AJOUTS :
- * - status : TODO, DOING, DONE (workflow de base)
- * - priority : LOW, MEDIUM, HIGH, CRITICAL
- * - dueDate : date d'échéance (optionnelle)
- * - userId : lien vers le propriétaire (ownership)
- * - completedAt : date de complétion (auto quand status = DONE)
- * - deletedAt : soft delete (optionnel)
+ * 2. TRANSPARENCE RÉFÉRENTIELLE :
+ *    task.update("nouveau titre", "desc") ne modifie PAS task.
+ *    Il retourne une NOUVELLE instance avec le titre modifié.
+ *    → f(x) = y, pas f(x) modifie x.
  *
- * PRINCIPE DES ENUMS EMBEDED :
- * On définit les enums à l'intérieur de la classe Task pour garder le domaine
- * cohérent et auto-contenu. Ainsi, TaskStatus n'existe que dans le contexte de Task.
+ * 3. SÉCURITÉ : Pas de setters publics → impossible de mettre
+ *    l'objet dans un état incohérent depuis l'extérieur.
+ *
+ * ARCHITECTURE HEXAGONALE :
+ * ─────────────────────────
+ * Ce record appartient au DOMAINE (cœur).
+ * Il ne dépend d'aucun framework (pas de JPA, pas de Spring).
+ * Les adaptateurs (TaskEntity ↔ Task) font la traduction.
+ *
+ * CYCLE DE VIE D'UNE TÂCHE :
+ * ──────────────────────────
+ * Création → TODO → DOING → DONE
+ *                 ↑        ↓
+ *                 └────────┘
+ *
+ * À tout moment : softDelete() peut archiver la tâche.
  */
 public record Task(
         String id,
@@ -39,133 +52,185 @@ public record Task(
         LocalDate dueDate,
         LocalDateTime completedAt,
         LocalDateTime deletedAt,
-        String userId
+        String userId,        // Créateur de la tâche (email)
+        String assigneeId     // Personne assignée (email, optionnel)
 ) {
 
-    // ============================================================
-    // ENUMS (Statuts et Priorités)
-    // ============================================================
-
     /**
-     * Workflow simplifié : TODO → DOING → DONE
+     * Énumération des statuts possibles d'une tâche.
+     * Le cycle de vie est : TODO → DOING → DONE
      *
-     * PRINCIPE : L'enum représente un état fini et connu à l'avance.
-     * On pourrait le rendre plus complexe (ex: CANCELLED, BLOCKED) mais
-     * pour le Sprint 1, on garde 3 états simples.
+     * NOTE : On ne valide pas les transitions ici (c'est au service
+     * métier TaskManager de le faire si nécessaire).
+     * Pour l'instant, on permet toute transition librement.
      */
     public enum TaskStatus {
-        TODO,       // À faire
-        DOING,      // En cours
-        DONE        // Terminée
+        TODO,    // À faire
+        DOING,   // En cours d'exécution
+        DONE     // Terminée
     }
 
     /**
-     * Niveaux de priorité
-     *
-     * PRINCIPE : Plus on ajoute de valeurs, plus le domaine est riche.
-     * Mais attention à ne pas surcharger : chaque valeur doit avoir
-     * un comportement spécifique dans le code (ex: tri, filtrage).
+     * Énumération des niveaux de priorité.
+     * LOW < MEDIUM < HIGH < CRITICAL
      */
     public enum TaskPriority {
-        LOW,        // Basse (nice to have)
-        MEDIUM,     // Moyenne (par défaut)
-        HIGH,       // Haute (à faire aujourd'hui)
-        CRITICAL    // Critique (bloquant)
+        LOW,      // Basse — peut attendre
+        MEDIUM,   // Moyenne — priorité normale
+        HIGH,     // Haute — à traiter rapidement
+        CRITICAL  // Critique — urgente, bloque d'autres tâches
     }
 
-    // ============================================================
-    // FACTORY METHODS (Méthodes de création)
-    // ============================================================
+    // ═══════════════════════════════════════════════════════
+    // FACTORY METHODS (méthodes de création)
+    // ═══════════════════════════════════════════════════════
+    // Ce pattern (Static Factory Method) remplace le constructeur
+    // public pour donner un nom explicite à la création.
 
     /**
      * Crée une nouvelle tâche avec les valeurs par défaut.
-     * - status = TODO
-     * - priority = MEDIUM
-     * - pas de dueDate, completedAt, deletedAt
      *
-     * PRINCIPE FACTORY METHOD :
-     * On utilise une méthode statique plutôt que le constructeur pour :
-     * 1. Donner un nom explicite à la création (create() vs new Task(...))
-     * 2. Appliquer des valeurs par défaut
-     * 3. Valider les paramètres si nécessaire
-     * 4. Centraliser la logique de création
+     * Pattern : Factory Method
+     * Pourquoi pas un constructeur ? Car on veut :
+     * - Générer un UUID automatiquement
+     * - Mettre le statut par défaut (TODO)
+     * - Mettre la priorité par défaut (MEDIUM)
+     * - Gérer la description null → ""
+     *
+     * @param title       Le titre de la tâche (obligatoire)
+     * @param description La description (peut être null → "")
+     * @param userId      L'email du créateur
+     * @return Une nouvelle instance Task
      */
     public static Task create(String title, String description, String userId) {
         return new Task(
-                UUID.randomUUID().toString(),                // ID unique (UUID v4)
+                UUID.randomUUID().toString(),
                 title,
-                description == null ? "" : description,    // ← NORMALISATION : null → ""
-                TaskStatus.TODO,      // Par défaut : à faire
-                TaskPriority.MEDIUM,   // Par défaut : priorité moyenne
-                null,                  // dueDate optionnelle
-                null,                  // completedAt null au départ
-                null,                  // deletedAt null = tâche active
-                userId                 // Propriétaire de la tâche
+                description == null ? "" : description,
+                TaskStatus.TODO,        // Statut par défaut
+                TaskPriority.MEDIUM,     // Priorité par défaut
+                null,                    // Pas de date d'échéance
+                null,                    // Pas encore terminée
+                null,                    // Pas supprimée
+                userId,
+                null                     // Pas assignée initialement
         );
     }
 
-    // ============================================================
-    // MÉTHODES DE MISE À JOUR (Retournent une NOUVELLE instance)
-    // ============================================================
+    /**
+     * Crée une nouvelle tâche avec un assignataire direct.
+     *
+     * Option A d'assignation : l'assignataire est défini à la création.
+     * Cela permet à un MANAGER/ADMIN de créer une tâche
+     * directement assignée à un utilisateur.
+     *
+     * @param title       Le titre
+     * @param description La description
+     * @param userId      L'email du créateur
+     * @param assigneeId  L'email de la personne assignée
+     * @return Une nouvelle instance Task avec assigneeId renseigné
+     */
+    public static Task createWithAssignee(String title, String description, String userId, String assigneeId) {
+        return new Task(
+                UUID.randomUUID().toString(),
+                title,
+                description == null ? "" : description,
+                TaskStatus.TODO,
+                TaskPriority.MEDIUM,
+                null,
+                null,
+                null,
+                userId,
+                assigneeId    // ← Assignation directe à la création
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES DE MODIFICATION (retournent une NOUVELLE instance)
+    // ═══════════════════════════════════════════════════════
+    // Chaque méthode retourne "new Task(...)" avec le champ
+    // modifié. C'est le pattern "Wither" appliqué aux records.
+    // Le record original n'est JAMAIS modifié.
 
     /**
-     * PRINCIPE "WITH" (fluent immutable update) :
-     * Chaque méthode retourne une NOUVELLE instance de Task avec le champ modifié.
-     * L'instance originale reste inchangée → thread-safe.
-     * C'est le pattern "with" des records immuables.
+     * Met à jour le titre et la description.
+     * Retourne une NOUVELLE instance (immutabilité).
      */
-
-    /** Met à jour le titre et la description */
     public Task update(String title, String description) {
         return new Task(this.id, title, description, this.status, this.priority,
-                this.dueDate, this.completedAt, this.deletedAt, this.userId);
+                this.dueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
     }
 
     /**
-     * Met à jour le statut (si passage à DONE, on set completedAt automatiquement).
-     *
-     * PRINCIPE D'AUTOMATISATION MÉTIER :
-     * Quand une tâche passe à DONE, on enregistre automatiquement la date de complétion.
-     * Cela évite que le développeur frontend doive envoyer completedAt manuellement.
+     * Change le statut de la tâche.
+     * Si le nouveau statut est DONE → completedAt = maintenant.
+     * Sinon → completedAt = null (annulation de complétion).
      */
     public Task updateStatus(TaskStatus newStatus) {
         LocalDateTime completedAt = (newStatus == TaskStatus.DONE)
                 ? LocalDateTime.now()
                 : null;
         return new Task(this.id, this.title, this.description, newStatus, this.priority,
-                this.dueDate, completedAt, this.deletedAt, this.userId);
-    }
-
-    /** Met à jour la priorité */
-    public Task updatePriority(TaskPriority newPriority) {
-        return new Task(this.id, this.title, this.description, this.status, newPriority,
-                this.dueDate, this.completedAt, this.deletedAt, this.userId);
-    }
-
-    /** Met à jour la date d'échéance */
-    public Task updateDueDate(LocalDate newDueDate) {
-        return new Task(this.id, this.title, this.description, this.status, this.priority,
-                newDueDate, this.completedAt, this.deletedAt, this.userId);
+                this.dueDate, completedAt, this.deletedAt, this.userId, this.assigneeId);
     }
 
     /**
-     * Soft delete : met deletedAt à maintenant (la tâche est "archivée").
+     * Change la priorité de la tâche.
+     */
+    public Task updatePriority(TaskPriority newPriority) {
+        return new Task(this.id, this.title, this.description, this.status, newPriority,
+                this.dueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
+    }
+
+    /**
+     * Change la date d'échéance de la tâche.
+     */
+    public Task updateDueDate(LocalDate newDueDate) {
+        return new Task(this.id, this.title, this.description, this.status, this.priority,
+                newDueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
+    }
+
+    /**
+     * Assigne la tâche à un utilisateur.
      *
-     * PRINCIPE DU SOFT DELETE :
-     * On ne supprime JAMAIS physiquement une tâche en BDD.
-     * On la marque comme "supprimée" en renseignant deletedAt.
-     * Avantages :
-     * - Possibilité de restaurer la tâche
-     * - Traçabilité (audit trail)
-     * - Intégrité référentielle (pas de cascade DELETE)
+     * RBAC : Cette méthode est appelée par TaskManager.assignTask()
+     * qui vérifie que seul ADMIN ou MANAGER peut assigner.
+     *
+     * @param newAssigneeId L'email de la personne à assigner
+     */
+    public Task assignTo(String newAssigneeId) {
+        return new Task(this.id, this.title, this.description, this.status, this.priority,
+                this.dueDate, this.completedAt, this.deletedAt, this.userId, newAssigneeId);
+    }
+
+    /**
+     * Soft delete : archive la tâche sans la supprimer physiquement.
+     *
+     * POURQUOI SOFT DELETE ?
+     * - Récupération possible (on peut remettre deletedAt à null)
+     * - Audit trail (on sait quand la tâche a été "supprimée")
+     * - Conformité RGPD (conservation des données)
+     * - Pas de CASCADE DELETE accidentel
+     *
+     * Conséquence technique : TOUTES les requêtes JPA doivent filtrer
+     * WHERE deletedAt IS NULL pour ne pas retourner les tâches archivées.
      */
     public Task softDelete() {
         return new Task(this.id, this.title, this.description, this.status, this.priority,
-                this.dueDate, this.completedAt, LocalDateTime.now(), this.userId);
+                this.dueDate, this.completedAt, LocalDateTime.now(), this.userId, this.assigneeId);
     }
 
-    /** Vérifie si la tâche est supprimée (archivée) */
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES DE QUERIE (query methods)
+    // ═══════════════════════════════════════════════════════
+
+    /** Vérifie si la tâche est archivée (soft delete). */
     public boolean isDeleted() {
         return deletedAt != null;
+    }
+
+    /** Vérifie si la tâche est assignée à quelqu'un. */
+    public boolean isAssigned() {
+        return assigneeId != null && !assigneeId.isBlank();
     }
 }

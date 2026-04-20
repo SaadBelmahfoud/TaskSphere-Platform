@@ -7,45 +7,44 @@ import org.springframework.data.domain.Persistable;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-/*
- * ====================================================================
- * ENTITÉ JPA : TASK (Représentation exacte de la table SQL "tasks")
- * ====================================================================
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ * ADAPTATEUR DE PERSISTANCE : TaskEntity
+ * ═══════════════════════════════════════════════════════════════════
  *
- * PRINCIPE JPA :
- * Cette classe est le pont entre le monde objet (Java) et le monde relationnel (SQL).
- * Hibernate lit cette classe et génère automatiquement les requêtes SQL
- * pour créer/mettre à jour la table "tasks".
+ * ROLE : Traduire le domaine (Task) en entité JPA compréhensible par Hibernate.
  *
- * Chaque champ annoté @Column correspond à une colonne dans la table.
- * Hibernate traduit automatiquement les types Java vers les types SQL :
- * - String → VARCHAR
- * - LocalDate → DATE
- * - LocalDateTime → TIMESTAMP
- * - Enum → VARCHAR (si @Enumerated(EnumType.STRING))
+ * ARCHITECTURE : Cet adaptateur se trouve dans "adapter/out/persistence"
+ * car il ADAPTE la sortie du domaine vers la base de données.
  *
- * SPRINT 1 - AJOUTS :
- * - status, priority : enums stockés comme VARCHAR en SQL
- * - dueDate : date d'échéance optionnelle
- * - completedAt, updatedAt : timestamps automatiques
- * - deletedAt : soft delete (null = actif, non-null = archivé)
- * - userId : lien vers le propriétaire (ownership)
+ * RELATION DOMAIN ↔ ENTITY :
+ * ┌──────────────────────────────────────────────────────────┐
+ * │  Domaine (Task record)          Entity (TaskEntity)       │
+ * │  ─────────────────────          ────────────────────      │
+ * │  Immutable                      Mutable (setters)         │
+ * │  Pas d'annotations JPA          @Entity, @Table, @Id      │
+ * │  Pas de notion de "new/existing" Persistable.isNew()      │
+ * │  Appelle toDomain()              Appelle constructeur     │
+ * │                                  ou setters (dirty check) │
+ * └──────────────────────────────────────────────────────────┘
  *
- * PRINCIPE @Enumerated(EnumType.STRING) :
- * On stocke l'enum comme texte ("TODO") et pas comme ordinal (0, 1, 2).
- * Pourquoi ? Si on ajoute une valeur au milieu de l'enum, les ordinaux changent
- * et toutes les données existantes seraient corrompues.
- * Exemple : TODO=0, DOING=1, DONE=2 → ajouter BLOCKED au milieu →
- * TODO=0, BLOCKED=1, DOING=2, DONE=3 → toutes les tâches DOING deviennent BLOCKED !
+ * SOLUTION AU BUG NonUniqueObjectException :
+ * ────────────────────────────────────────
+ * Problème : Si on fait new TaskEntity(task) puis em.persist(),
+ * Hibernate peut lever NonUniqueObjectException car une autre
+ * instance avec le même ID existe déjà dans le L1 Cache.
  *
- * PRINCIPE Persistable<String> :
- * L'UUID est pré-généré dans le domaine (Task.create → UUID.randomUUID).
- * Sans Persistable, Spring Data voit un ID non-null et pense que l'entité
- * est déjà en base → il fait un merge() au lieu de persist() → crash avec
- * "detached entity passed to persist".
- * Persistable.isNew() indique explicitement si c'est une nouvelle entité.
+ * Solution (chemin dual dans TaskPersistenceAdapter.save()) :
+ * 1. Si l'entité existe en DB → récupérer via findById()
+ *    → modifier via setters → Hibernate dirty checking → UPDATE
+ * 2. Si nouvelle → new TaskEntity(task) avec isNew=true → INSERT
  *
- * ATTENTION : Persistable est spécifique à Spring Data. Ce n'est pas un standard JPA.
+ * IMPORTANT : @Transient pour isNew
+ * ─────────────────────────────────────
+ * Le champ `isNew` est annoté @Transient pour que Hibernate
+ * NE le persiste PAS en base de données. C'est un champ technique
+ * qui existe uniquement en mémoire pour indiquer à Spring Data JPA
+ * s'il faut faire un INSERT ou un UPDATE.
  */
 @Entity
 @Table(name = "tasks")
@@ -75,67 +74,77 @@ public class TaskEntity implements Persistable<String> {
     @Column
     private LocalDateTime completedAt;
 
-    /**
-     * createdAt : Date de création de la tâche.
-     * nullable = false car chaque tâche doit avoir une date de création.
-     * Mis à jour uniquement à l'insertion (dans le constructeur), jamais modifié après.
-     */
     @Column(nullable = false)
     private LocalDateTime createdAt;
 
-    /**
-     * updatedAt : Date de dernière modification.
-     * Mis à jour automatiquement dans chaque setter → toujours à jour.
-     */
     @Column(nullable = false)
     private LocalDateTime updatedAt;
 
     /**
-     * deletedAt : Date de suppression logique (soft delete).
-     * null = tâche active, non-null = tâche archivée.
-     * Utilisé par les requêtes JPA pour filtrer les tâches actives.
+     * SOFT DELETE : deletedAt = null → tâche active
+     * deletedAt = datetime → tâche archivée
+     * Toutes les requêtes doivent filtrer WHERE deletedAt IS NULL
      */
     @Column
     private LocalDateTime deletedAt;
 
     /**
-     * userId : Identifiant du propriétaire de la tâche.
-     * Permet de filtrer les tâches par utilisateur (ownership / RBAC).
+     * userId = l'email du créateur de la tâche.
+     * C'est le champ de "propriété" utilisé pour le RBAC :
+     * un USER ne peut voir/modifier que ses propres tâches (userId = son email).
      */
     @Column(nullable = false, length = 36)
     private String userId;
 
     /**
-     * Flag transient pour indiquer à Spring Data JPA si c'est une nouvelle entité.
-     * - true  : → repository.save() fera un em.persist()  (INSERT)
-     * - false : → repository.save() fera un em.merge()    (UPDATE)
+     * assigneeId = l'email de la personne à qui la tâche est assignée.
+     * Option A d'assignation : champ séparé du userId.
+     * - null = tâche non assignée
+     * - "email@x.com" = tâche assignée à cet utilisateur
      *
-     * PRINCIPE @Transient :
-     * Ce champ n'est PAS mappé en BDD. Il existe uniquement en mémoire
-     * pour que Spring Data sache quoi faire lors du save().
+     * Permissions :
+     * - Seuls ADMIN et MANAGER peuvent modifier ce champ (via /assign)
+     * - L'assignataire peut changer le statut de la tâche
+     */
+    @Column(length = 36)
+    private String assigneeId;
+
+    /**
+     * CHAMP TECHNIQUE @Transient : isNew
+     * ─────────────────────────────────────
+     * Ce champ n'est PAS persisté en base de données.
+     * Il indique à Spring Data JPA si l'entité est NOUVELLE (INSERT)
+     * ou EXISTANTE (UPDATE).
+     *
+     * Cycle de vie :
+     * 1. Constructeur vide (Hibernate) → isNew = false
+     * 2. Constructeur Task(Task) → isNew = true
+     * 3. @PostPersist/@PostLoad → isNew = false
+     *
+     * Le @PostLoad s'exécute après chaque SELECT, donc après
+     * un findById(), l'entité sera isNew = false → UPDATE.
      */
     @Transient
     private boolean isNew = true;
 
-    // ============ CONSTRUCTEURS ============
-
     /**
-     * Constructeur vide obligatoire pour JPA (crée un objet depuis les rows SQL).
-     * Hibernate appelle ce constructeur quand il charge une entité depuis la BDD.
-     * C'est pourquoi isNew = false : l'entité vient de la BDD, donc elle n'est pas nouvelle.
+     * Constructeur par défaut requis par JPA/Hibernate.
+     * Hibernate utilise ce constructeur via réflexion pour
+     * créer des instances lors des SELECT.
      */
     protected TaskEntity() {
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
-        this.isNew = false;
+        this.isNew = false;  // Entité chargée depuis DB = pas nouvelle
     }
 
     /**
-     * Constructeur pour créer une nouvelle tâche depuis le domaine.
-     * Appelé par l'adaptateur de persistance quand on sauvegarde une tâche.
+     * Constructeur de conversion Domain → Entity.
+     * Utilisé pour les NOUVELLES tâches (INSERT).
      *
-     * PRINCIPE : Le constructeur prend un objet domaine Task et copie chaque champ.
-     * C'est la SEULE méthode qui traverse la frontière Domaine → JPA.
+     * Pour les mises à jour (UPDATE), le TaskPersistenceAdapter
+     * utilise le chemin dual : récupérer l'entité existante
+     * et modifier via setters (dirty checking).
      */
     public TaskEntity(Task task) {
         this.id = task.id();
@@ -147,65 +156,46 @@ public class TaskEntity implements Persistable<String> {
         this.completedAt = task.completedAt();
         this.deletedAt = task.deletedAt();
         this.userId = task.userId();
+        this.assigneeId = task.assigneeId();
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
-        this.isNew = true;  // ← Entité nouvelle → INSERT
-    }
-
-    // ============ Persistable<String> ============
-
-    @Override
-    public String getId() {
-        return id;
+        this.isNew = true;  // ← Indique à JPA de faire un INSERT
     }
 
     @Override
-    public boolean isNew() {
-        return isNew;
-    }
+    public String getId() { return id; }
+
+    @Override
+    public boolean isNew() { return isNew; }
 
     /**
-     * Après INSERT en base, l'entité n'est plus "nouvelle".
+     * Cycle de vie JPA : @PostPersist et @PostLoad
+     * ──────────────────────────────────────────────
+     * @PostPersist : appelé APRÈS l'INSERT en base.
+     *   → L'entité existe maintenant en DB → plus nouvelle.
      *
-     * PRINCIPE @PostPersist :
-     * Callback JPA appelé juste après l'INSERT en BDD.
-     * À ce moment, l'entité est persistée → isNew = false pour les futurs save().
+     * @PostLoad : appelé APRÈS chaque SELECT (findById, findAll, etc.).
+     *   → L'entité est chargée depuis DB → pas nouvelle → UPDATE si modifiée.
      *
-     * PRINCIPE @PostLoad :
-     * Callback JPA appelé juste après le chargement depuis la BDD.
-     * Une entité chargée n'est jamais "nouvelle" → isNew = false.
+     * SANS cet appel, après un findById() l'entité aurait encore isNew=true
+     * et Hibernate tenterait un INSERT au lieu d'un UPDATE → erreur !
      */
     @PostPersist
     @PostLoad
-    private void markNotNew() {
-        this.isNew = false;
-    }
-
-    // ============ CONVERSION VERS DOMAINE ============
+    private void markNotNew() { this.isNew = false; }
 
     /**
-     * Convertit cette entité JPA en objet domaine Task.
-     * C'est la SEULE méthode qui traverse la frontière JPA → Domaine.
-     *
-     * PRINCIPE : La conversion est manuelle et explicite.
-     * On ne fait JAMAIS de conversion automatique (comme MapStruct) pour garder
-     * le contrôle total sur ce qui est mappé et éviter les surprises.
+     * Convertit l'entité JPA en objet du domaine (Task record).
+     * C'est la méthode de mappage Entity → Domain.
      */
     public Task toDomain() {
-        return new Task(
-                this.id,
-                this.title,
-                this.description,
-                this.status,
-                this.priority,
-                this.dueDate,
-                this.completedAt,
-                this.deletedAt,
-                this.userId
-        );
+        return new Task(this.id, this.title, this.description, this.status, this.priority,
+                this.dueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
     }
 
-    // ============ GETTERS ============
+    // ═══════════════════════════════════════════════════════
+    // GETTERS
+    // ═══════════════════════════════════════════════════════
 
     public String getTitle() { return title; }
     public String getDescription() { return description; }
@@ -217,46 +207,27 @@ public class TaskEntity implements Persistable<String> {
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public LocalDateTime getDeletedAt() { return deletedAt; }
     public String getUserId() { return userId; }
+    public String getAssigneeId() { return assigneeId; }
 
-    // ============ SETTERS ============
-    // Utilisés par l'adaptateur de persistance pour les mises à jour partielles.
-    // Chaque setter met aussi à jour updatedAt automatiquement.
-    //
-    // PRINCIPE : updatedAt est mis à jour dans CHAQUE setter pour garantir
-    // que la date de modification est toujours à jour, peu importe quel champ change.
+    // ═══════════════════════════════════════════════════════
+    // SETTERS (utilisés par le dirty checking de Hibernate)
+    // ═══════════════════════════════════════════════════════
+    // Chaque setter met à jour updatedAt automatiquement.
+    // C'est le dirty checking : Hibernate compare l'état actuel
+    // de l'entité avec son snapshot (pris au chargement).
+    // Si un champ a changé → Hibernate génère un UPDATE au flush.
 
-    public void setTitle(String title) {
-        this.title = title;
-        this.updatedAt = LocalDateTime.now();
-    }
+    public void setTitle(String title) { this.title = title; this.updatedAt = LocalDateTime.now(); }
+    public void setDescription(String description) { this.description = description; this.updatedAt = LocalDateTime.now(); }
+    public void setStatus(Task.TaskStatus status) { this.status = status; this.updatedAt = LocalDateTime.now(); }
+    public void setPriority(Task.TaskPriority priority) { this.priority = priority; this.updatedAt = LocalDateTime.now(); }
+    public void setDueDate(LocalDate dueDate) { this.dueDate = dueDate; this.updatedAt = LocalDateTime.now(); }
+    public void setCompletedAt(LocalDateTime completedAt) { this.completedAt = completedAt; this.updatedAt = LocalDateTime.now(); }
+    public void setDeletedAt(LocalDateTime deletedAt) { this.deletedAt = deletedAt; this.updatedAt = LocalDateTime.now(); }
 
-    public void setDescription(String description) {
-        this.description = description;
-        this.updatedAt = LocalDateTime.now();
-    }
-
-    public void setStatus(Task.TaskStatus status) {
-        this.status = status;
-        this.updatedAt = LocalDateTime.now();
-    }
-
-    public void setPriority(Task.TaskPriority priority) {
-        this.priority = priority;
-        this.updatedAt = LocalDateTime.now();
-    }
-
-    public void setDueDate(LocalDate dueDate) {
-        this.dueDate = dueDate;
-        this.updatedAt = LocalDateTime.now();
-    }
-
-    public void setCompletedAt(LocalDateTime completedAt) {
-        this.completedAt = completedAt;
-        this.updatedAt = LocalDateTime.now();
-    }
-
-    public void setDeletedAt(LocalDateTime deletedAt) {
-        this.deletedAt = deletedAt;
-        this.updatedAt = LocalDateTime.now();
-    }
+    /**
+     * Setter pour l'assignation de tâche.
+     * Utilisé par TaskPersistenceAdapter lors de l'assignation.
+     */
+    public void setAssigneeId(String assigneeId) { this.assigneeId = assigneeId; this.updatedAt = LocalDateTime.now(); }
 }
