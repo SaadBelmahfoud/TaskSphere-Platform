@@ -163,6 +163,7 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
             managedEntity.setPriority(task.priority());
             managedEntity.setDueDate(task.dueDate());
             managedEntity.setCompletedAt(task.completedAt());
+            managedEntity.setAssigneeId(task.assigneeId());
 
             // Champs immuables — ON NE LES MODIFIE PAS après création :
             // - createdAt : la date de création ne change jamais
@@ -285,5 +286,87 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
             entity.setDeletedAt(java.time.LocalDateTime.now());
             taskRepository.save(entity);
         });
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // RECHERCHE DYNAMIQUE AVEC FILTRES (Sprint 2)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * RECHERCHE DYNAMIQUE AVEC FILTRES OPTIONNELS
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Traduction du Parameter Object vers le Repository
+     * ─────────────────────────────────────────────────────────
+     * Cette méthode reçoit un TaskSearchCriteria (Parameter Object)
+     * et décompose chaque champ pour le passer au @Query JPQL
+     * du TaskRepository.
+     *
+     * FLUX :
+     * TaskManager.searchTasks(criteria, ...)
+     *   → TaskPersistencePort.searchTasks(criteria, pageable)  [interface]
+     *     → TaskPersistenceAdapter.searchTasks(criteria, pageable) [CETTE MÉTHODE]
+     *       → TaskRepository.searchTasks(keyword, userId, ..., pageable) [JPA @Query]
+     *         → SELECT ... FROM TaskEntity WHERE deletedAt IS NULL
+     *           AND (:param IS NULL OR condition)
+     *
+     * PRINCIPE ":param IS NULL OR condition" DANS LE @Query :
+     * ────────────────────────────────────────────────────────
+     * C'est le cœur du système de filtres dynamiques en JPQL.
+     *
+     * Quand un paramètre est null :
+     *   (:param IS NULL)  → TRUE  → le filtre est ignoré (condition court-circuitée)
+     *
+     * Quand un paramètre est non-null :
+     *   (:param IS NULL)  → FALSE → la condition après OR est évaluée
+     *
+     * EXEMPLE CONCRET avec keyword = "urgence" et status = null :
+     *   AND (NULL IS NULL                           → FALSE
+     *      OR LOWER(title) LIKE '%urgence%'         → évalué
+     *      OR LOWER(description) LIKE '%urgence%')  → évalué)
+     *   AND (NULL IS NULL                   → TRUE  → filtre ignoré)
+     *
+     *   → Résultat SQL équivalent :
+     *   WHERE ... AND (title LIKE '%urgence%' OR description LIKE '%urgence%')
+     *
+     * PRINCIPE DE PAGINATION :
+     * Spring Data Pageable gère automatiquement le LIMIT/OFFSET via page et size.
+     * Le tri est aussi géré par Pageable (sortBy, sortDir).
+     *
+     * PRINCIPE .map(TaskEntity::toDomain) :
+     * Transforme chaque TaskEntity de la page en Task (record domaine).
+     * C'est un mapping fonctionnel qui préserve la pagination (nombre total, etc.).
+     *
+     * @param criteria Les critères de recherche (tous optionnels via IS NULL OR pattern)
+     * @param pageable La pagination et le tri
+     * @return Une page de Task (objets domaine, pas des entités JPA)
+     */
+    @Override
+    public Page<Task> searchTasks(TaskSearchCriteria criteria, Pageable pageable) {
+        log.debug("ADAPTATEUR JPA : Recherche dynamique avec critères keyword={}, userId={}, assigneeId={}, status={}, priority={}",
+                criteria.keyword(), criteria.userId(), criteria.assigneeId(),
+                criteria.status(), criteria.priority());
+
+        // Le TaskRepository.searchTasks() attend les paramètres décomposés
+        // car JPQL @Param nécessite des paramètres individuels (pas de record direct).
+        // On déstructure le Parameter Object ici → traduction Port vers JPA.
+        Page<TaskEntity> result = taskRepository.searchTasks(
+                criteria.keyword(),
+                criteria.userId(),
+                criteria.assigneeId(),
+                criteria.status(),
+                criteria.priority(),
+                criteria.dueDateFrom(),
+                criteria.dueDateTo(),
+                criteria.createdFrom(),
+                criteria.createdTo(),
+                pageable
+        );
+
+        // .map(TaskEntity::toDomain) : transformation de chaque élément de la page.
+        // Page<T> est immuable, .map() retourne une NOUVELLE page avec les éléments transformés.
+        // Les métadonnées de pagination (totalElements, totalPages) sont préservées.
+        return result.map(TaskEntity::toDomain);
     }
 }

@@ -35,6 +35,17 @@ import java.time.LocalDate;
  * FLOW DE VALIDATION COMPLET :
  * Client → JSON → Jackson (désérialisation) → @Valid (validation Jakarta)
  * → Controller (objet valide) → Service (logique métier) → Repository (persistance)
+ *
+ * ASSIGNATION (Option A) :
+ * Le champ assigneeId permet de créer une tâche directement assignée.
+ * - Si null ou absent du JSON → tâche non assignée (comportement par défaut)
+ * - Si renseigné → la tâche sera assignée à cet utilisateur
+ *   (le service vérifie que seul ADMIN/MANAGER peut assigner)
+ *
+ * PRINCIPE DE SÉCURITÉ JACKSON :
+ * Quand le client n'envoie pas assigneeId dans le JSON, Jackson met null.
+ * On n'a pas besoin de @JsonInclude ou de valeur par défaut — null est la bonne
+ * valeur pour signifier "pas d'assignation".
  */
 public record TaskCreateRequest(
 
@@ -46,7 +57,7 @@ public record TaskCreateRequest(
         String description,
 
         /**
-         * Priority optionnel : "LOW", "MEDIUM", "HIGH", "CRITICAL"
+         * Priority optionel : "LOW", "MEDIUM", "HIGH", "CRITICAL"
          * Si null ou vide → la valeur par défaut (MEDIUM) sera appliquée par le service.
          *
          * NOTE : Pas d'annotation @Pattern ici car la validation de la valeur
@@ -60,6 +71,27 @@ public record TaskCreateRequest(
          * Si null → pas de date d'échéance.
          * TODO (futur) : Ajouter @FutureOrPresent pour interdire les dates passées.
          */
-        LocalDate dueDate
+        LocalDate dueDate,
+
+        /**
+         * Assignataire optionnel (Option A d'assignation).
+         *
+         * PRINCIPE D'ASSIGNATION À LA CRÉATION :
+         * Un MANAGER ou ADMIN peut créer une tâche déjà assignée en passant
+         * l'email de l'assignataire dans ce champ.
+         *
+         * FLUX :
+         * 1. Client envoie : { "title": "...", "assigneeId": "user@x.com" }
+         * 2. Controller passe request.assigneeId() au service
+         * 3. TaskManager.createTask() vérifie le RBAC :
+         *    - Si USER → le champ est ignoré (pas de droit d'assignation)
+         *    - Si MANAGER/ADMIN → la tâche est créée avec assigneeId renseigné
+         *
+         * Si null ou absent du JSON → tâche non assignée (valeur par défaut).
+         *
+         * NOTE : Pas d'annotation @Email ici car on valide côté service
+         * via le UserInformationPort (vérifie que l'utilisateur existe).
+         */
+        String assigneeId
 ) {
 }

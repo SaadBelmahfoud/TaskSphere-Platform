@@ -30,6 +30,12 @@ import java.time.LocalDateTime;
  * PRINCIPE DE CONVERSION :
  * fromDomain() est une méthode statique factory qui convertit un objet domaine
  * en DTO. C'est le pattern "Factory Method" appliqué aux DTOs.
+ *
+ * CHAMP assigneeId :
+ * L'email de la personne assignée à la tâche (Option A d'assignation).
+ * - null = tâche non assignée
+ * - "email@x.com" = tâche assignée à cet utilisateur
+ * Utilisé par le frontend pour afficher l'assignataire dans la Kanban et les cartes.
  */
 public record TaskResponse(
         String id,
@@ -40,7 +46,8 @@ public record TaskResponse(
         LocalDate dueDate,
         LocalDateTime completedAt,
         LocalDateTime createdAt,
-        String userId
+        String userId,        // Créateur de la tâche
+        String assigneeId     // Personne assignée (null si non assignée)
 ) {
 
     /**
@@ -66,7 +73,8 @@ public record TaskResponse(
                 task.dueDate(),
                 task.completedAt(),
                 null,           // createdAt n'est pas dans le domaine → null
-                task.userId()
+                task.userId(),
+                task.assigneeId()   // ← Assignataire (null si non assigné)
         );
     }
 
@@ -92,7 +100,8 @@ public record TaskResponse(
                 task.dueDate(),
                 task.completedAt(),
                 createdAt,     // ← Date de création réelle depuis l'entité JPA
-                task.userId()
+                task.userId(),
+                task.assigneeId()   // ← Assignataire (null si non assigné)
         );
     }
 }

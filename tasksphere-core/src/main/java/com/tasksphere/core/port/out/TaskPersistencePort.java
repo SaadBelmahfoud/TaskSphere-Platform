@@ -4,6 +4,8 @@ import com.tasksphere.core.domain.Task;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 /*
@@ -29,6 +31,7 @@ import java.util.Optional;
  * 3. INDÉPENDANCE : Le domaine ne dépend d'aucune technologie spécifique
  *
  * SPRINT 1 : Ajout de findById, update, et filtrage par utilisateur.
+ * SPRINT 2 : Ajout de searchTasks avec critères dynamiques (Parameter Object Pattern).
  */
 public interface TaskPersistencePort {
 
@@ -52,4 +55,88 @@ public interface TaskPersistencePort {
 
     /** Supprimer logiquement une tâche (soft delete : set deletedAt = now) */
     void softDelete(String id);
+
+    // ═══════════════════════════════════════════════════════
+    // RECHERCHE DYNAMIQUE (Sprint 2)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Recherche dynamique avec filtres optionnels.
+     *
+     * PRINCIPE PARAMETER OBJECT :
+     * Au lieu de passer 9 paramètres (keyword, userId, assigneeId, status,
+     * priority, dueDateFrom, dueDateTo, createdFrom, createdTo), on encapsule
+     * tous les critères dans un record TaskSearchCriteria.
+     *
+     * AVANTAGES DU PARAMETER OBJECT :
+     * 1. LISIBILITÉ : La signature est propre (1 paramètre au lieu de 9)
+     * 2. EXTENSIBILITÉ : Ajouter un filtre = ajouter un champ au record
+     * 3. IMMUTABILITÉ : Un record est immutable → pas d'effets de bord
+     * 4. TYPAGE FORT : Chaque critère a son type (String, enum, LocalDate, etc.)
+     *
+     * PRINCIPE DE DÉLÉGATION AU REPOSITORY :
+     * Cette méthode délègue à TaskPersistenceAdapter qui traduit
+     * les critères en paramètres JPQL pour le @Query dynamique.
+     *
+     * @param criteria Les critères de recherche (tous optionnels)
+     * @param pageable La pagination (page, size, sort)
+     * @return Une page de tâches correspondant aux critères
+     */
+    Page<Task> searchTasks(TaskSearchCriteria criteria, Pageable pageable);
+
+    // ═══════════════════════════════════════════════════════
+    // PARAMETER OBJECT : TaskSearchCriteria
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PARAMETER OBJECT : TaskSearchCriteria
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Parameter Object Pattern
+     * Quand une méthode a trop de paramètres (ici 9), on les regroupe
+     * dans un record dédié. C'est un refactoring classique.
+     *
+     * POURQUOI UN RECORD ET PAS UNE CLASSE ?
+     * - Immuabilité : les critères ne changent pas pendant la recherche
+     * - Auto-génération : constructeur, equals, hashCode, toString
+     * - Concision : pas de boilerplate
+     *
+     * POURQUOI INNER RECORD (dans l'interface) ?
+     * - Cohérence : ce record n'a de sens QUE pour ce port
+     * - Encapsulation : il n'est visible que via TaskPersistencePort.TaskSearchCriteria
+     * - Simplicité : pas besoin d'un fichier séparé pour un record de 10 lignes
+     *
+     * FILTRES DISPONIBLES (9 filtres + pagination) :
+     * ────────────────────────────────────────────
+     * 1. keyword     → Recherche textuelle (titre OU description, case-insensitive)
+     * 2. userId      → Filtrer par créateur (pour ADMIN/MANAGER qui voient toutes les tâches)
+     * 3. assigneeId  → Filtrer par assignataire
+     * 4. status      → Filtrer par statut (TODO/DOING/DONE)
+     * 5. priority    → Filtrer par priorité (LOW/MEDIUM/HIGH/CRITICAL)
+     * 6. dueDateFrom → Date d'échéance minimum (>=)
+     * 7. dueDateTo   → Date d'échéance maximum (<=)
+     * 8. createdFrom → Date de création minimum (>=)
+     * 9. createdTo   → Date de création maximum (<=)
+     *
+     * UTILISATION DANS LE CONTROLLER (TaskController.getTasks()) :
+     * new TaskPersistencePort.TaskSearchCriteria(keyword, null, assigneeId, ...)
+     * → Le userId est null car il est injecté par le service selon le rôle
+     *    (RBAC : USER ne voit que ses tâches, ADMIN/MANAGER voient tout)
+     *
+     * UTILISATION DANS LE SERVICE (TaskManager.searchTasks()) :
+     * → ADMIN/MANAGER : les critères passés tels quels (recherche globale)
+     * → USER : deux recherches sont faites (owned + assigned) puis fusionnées
+     */
+    record TaskSearchCriteria(
+            String keyword,        // Recherche textuelle (titre ou description)
+            String userId,         // Filtrer par créateur (injecté par RBAC)
+            String assigneeId,     // Filtrer par assignataire
+            Task.TaskStatus status,        // Filtrer par statut
+            Task.TaskPriority priority,    // Filtrer par priorité
+            LocalDate dueDateFrom,         // Date d'échéance minimum
+            LocalDate dueDateTo,           // Date d'échéance maximum
+            LocalDateTime createdFrom,     // Date de création minimum
+            LocalDateTime createdTo        // Date de création maximum
+    ) {}
 }
