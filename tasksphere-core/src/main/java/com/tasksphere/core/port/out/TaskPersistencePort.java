@@ -74,10 +74,6 @@ public interface TaskPersistencePort {
      * 3. IMMUTABILITÉ : Un record est immutable → pas d'effets de bord
      * 4. TYPAGE FORT : Chaque critère a son type (String, enum, LocalDate, etc.)
      *
-     * PRINCIPE DE DÉLÉGATION AU REPOSITORY :
-     * Cette méthode délègue à TaskPersistenceAdapter qui traduit
-     * les critères en paramètres JPQL pour le @Query dynamique.
-     *
      * @param criteria Les critères de recherche (tous optionnels)
      * @param pageable La pagination (page, size, sort)
      * @return Une page de tâches correspondant aux critères
@@ -97,20 +93,15 @@ public interface TaskPersistencePort {
      * Quand une méthode a trop de paramètres (ici 9), on les regroupe
      * dans un record dédié. C'est un refactoring classique.
      *
-     * POURQUOI UN RECORD ET PAS UNE CLASSE ?
-     * - Immuabilité : les critères ne changent pas pendant la recherche
-     * - Auto-génération : constructeur, equals, hashCode, toString
-     * - Concision : pas de boilerplate
-     *
-     * POURQUOI INNER RECORD (dans l'interface) ?
+     * POURQUOI UN INNER RECORD (dans l'interface) ?
      * - Cohérence : ce record n'a de sens QUE pour ce port
      * - Encapsulation : il n'est visible que via TaskPersistencePort.TaskSearchCriteria
      * - Simplicité : pas besoin d'un fichier séparé pour un record de 10 lignes
      *
      * FILTRES DISPONIBLES (9 filtres + pagination) :
      * ────────────────────────────────────────────
-     * 1. keyword     → Recherche textuelle (titre OU description, case-insensitive)
-     * 2. userId      → Filtrer par créateur (pour ADMIN/MANAGER qui voient toutes les tâches)
+     * 1. keyword     → Recherche textuelle (titre OU description)
+     * 2. userId      → Filtrer par créateur (pour ADMIN/MANAGER)
      * 3. assigneeId  → Filtrer par assignataire
      * 4. status      → Filtrer par statut (TODO/DOING/DONE)
      * 5. priority    → Filtrer par priorité (LOW/MEDIUM/HIGH/CRITICAL)

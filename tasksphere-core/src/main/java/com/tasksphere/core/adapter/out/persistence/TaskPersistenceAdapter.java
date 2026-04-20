@@ -129,33 +129,12 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     public Task save(Task task) {
         log.debug("ADAPTATEUR JPA : Sauvegarde de la tâche '{}' (id: {})", task.title(), task.id());
 
-        // ── ÉTAPE 1 : Vérifier si l'entité existe déjà en BDD ──
-        // On cherche l'entité dans le repository. Deux cas possibles :
-        // - Elle est dans le L1 cache → Hibernate la retourne sans SELECT
-        // - Elle n'est pas en cache → Hibernate fait un SELECT
-        // Dans les deux cas, si l'entité existe, on la récupère MANAGED.
         Optional<TaskEntity> existingEntity = taskRepository.findByIdAndDeletedAtIsNull(task.id());
 
         if (existingEntity.isPresent()) {
             // ══════════════════════════════════════════════════════════
             //  CHEMIN UPDATE : L'entité existe déjà en BDD
             // ══════════════════════════════════════════════════════════
-            //
-            // On récupère l'entité MANAGÉE déjà présente dans la Session.
-            // C'est la MÊME instance que celle chargée par findByIdAndUserId()
-            // dans TaskManager.updateTask() plus tôt dans la transaction.
-            //
-            // Pourquoi c'est la même instance ?
-            // → Parce que le L1 cache garantit l'unicité par identifiant.
-            // → Deux appels à findById() avec le même id retournent
-            //   la MÊME référence d'objet Java.
-            //
-            // On modifie ses champs via les setters. Chaque setter met
-            // aussi à jour updatedAt automatiquement (voir TaskEntity).
-            //
-            // Au commit de la transaction, le dirty checking de Hibernate
-            // compare l'état actuel avec le snapshot au chargement.
-            // Si des champs ont changé → UPDATE SQL automatique.
             TaskEntity managedEntity = existingEntity.get();
             managedEntity.setTitle(task.title());
             managedEntity.setDescription(task.description());
@@ -163,15 +142,13 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
             managedEntity.setPriority(task.priority());
             managedEntity.setDueDate(task.dueDate());
             managedEntity.setCompletedAt(task.completedAt());
+            // CORRECTION : Ajout du setAssigneeId pour persister l'assignation
             managedEntity.setAssigneeId(task.assigneeId());
 
             // Champs immuables — ON NE LES MODIFIE PAS après création :
             // - createdAt : la date de création ne change jamais
             // - deletedAt : géré uniquement par softDelete()
             // - userId : le propriétaire ne change pas (ownership)
-            //
-            // Note : updatedAt est mis à jour automatiquement par chaque
-            // setter ci-dessus (voir TaskEntity.setTitle(), etc.)
 
             log.debug("ADAPTATEUR JPA : Mise à jour de la tâche existante '{}'", task.title());
             return managedEntity.toDomain();
@@ -180,16 +157,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
             // ══════════════════════════════════════════════════════════
             //  CHEMIN INSERT : Nouvelle tâche, pas encore en BDD
             // ══════════════════════════════════════════════════════════
-            //
-            // L'entité n'existe pas dans la Session ni en BDD.
-            // On peut créer un nouveau TaskEntity en toute sécurité.
-            //
-            // Le constructeur TaskEntity(Task) met isNew = true.
-            // repository.save() voit isNew() = true → em.persist() → INSERT.
-            //
-            // Après l'INSERT, @PostPersist dans TaskEntity met isNew = false.
-            // Ainsi, si on appelle save() à nouveau avec cette même entité
-            // dans la même transaction, Hibernate saura faire un UPDATE.
             TaskEntity entity = new TaskEntity(task);
             TaskEntity saved = taskRepository.save(entity);
             log.debug("ADAPTATEUR JPA : Nouvelle tâche créée '{}'", task.title());
@@ -197,17 +164,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         }
     }
 
-    /**
-     * Lister les tâches d'un utilisateur avec pagination.
-     *
-     * PRINCIPE .map(TaskEntity::toDomain) :
-     * Page.map() transforme chaque élément de la page JPA en élément domaine.
-     * C'est un mapping fonctionnel (Stream-like) spécifique à Spring Data.
-     *
-     * PRINCIPE DE FILTRAGE :
-     * La méthode de repository filtre automatiquement par userId ET deletedAt IS NULL.
-     * Cela signifie que les tâches archivées (soft delete) ne sont jamais retournées.
-     */
     @Override
     public Page<Task> findByUserId(String userId, Pageable pageable) {
         log.debug("ADAPTATEUR JPA : Recherche des tâches de l'utilisateur {}", userId);
@@ -215,13 +171,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
-    /**
-     * Récupérer une tâche active par son ID.
-     *
-     * PRINCIPE "Active" :
-     * deletedAt IS NULL = la tâche n'a pas été supprimée (soft delete).
-     * Les tâches archivées sont ignorées par toutes les requêtes.
-     */
     @Override
     public Optional<Task> findById(String id) {
         log.debug("ADAPTATEUR JPA : Recherche de la tâche {}", id);
@@ -229,22 +178,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
-    /**
-     * Récupérer une tâche active appartenant à un utilisateur spécifique.
-     *
-     * PRINCIPE D'OWNERSHIP (double vérification) :
-     * On filtre par id ET userId pour s'assurer que :
-     * 1. La tâche existe et est active (deletedAt IS NULL)
-     * 2. La tâche appartient bien à l'utilisateur demandeur
-     *
-     * Cela empêche un utilisateur de modifier/voir les tâches d'un autre.
-     * C'est le principe de RBAC (Role-Based Access Control) au niveau data.
-     *
-     * PRINCIPE DE SÉCURITÉ :
-     * Même si l'URL contient un ID valide, si le userId ne correspond pas,
-     * la requête retourne Optional.empty() → 404 Not Found.
-     * On ne révèle JAMAIS si la tâche existe ou non pour un autre utilisateur.
-     */
     @Override
     public Optional<Task> findByIdAndUserId(String id, String userId) {
         log.debug("ADAPTATEUR JPA : Recherche tâche {} pour l'utilisateur {}", id, userId);
@@ -252,33 +185,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
-    /**
-     * Soft delete : marque la tâche comme archivée en renseignant deletedAt.
-     *
-     * PRINCIPE DU SOFT DELETE :
-     * On ne supprime JAMAIS physiquement une ligne en BDD. On met
-     * simplement deletedAt à la date/heure actuelle. Les requêtes
-     * filtrent sur "deletedAt IS NULL" pour ne retourner que les actives.
-     *
-     * AVANTAGES DU SOFT DELETE :
-     * 1. Récupération possible en cas d'erreur
-     * 2. Audit trail : on sait quand la tâche a été "supprimée"
-     * 3. Conformité RGPD : on garde une trace des données
-     * 4. Pas de CASCADE DELETE qui pourrait supprimer d'autres données
-     *
-     * PRINCIPE .ifPresent() :
-     * On ne fait le soft delete que si la tâche existe et est active.
-     * Si la tâche n'existe pas ou est déjà supprimée, on ne fait rien.
-     *
-     * PRINCIPE DU SETTER :
-     * On utilise entity.setDeletedAt() au lieu d'accéder directement au champ.
-     * Le setter met aussi à jour updatedAt automatiquement (voir TaskEntity).
-     *
-     * PRINCIPE DE SÉCURITÉ ICI :
-     * Cette méthode ne vérifie PAS l'userId ! C'est le TaskManager.deleteTask()
-     * qui appelle d'abord findByIdAndUserId() pour vérifier l'ownership
-     * AVANT d'appeler softDelete(). L'adaptateur ne fait que la technique.
-     */
     @Override
     public void softDelete(String id) {
         log.debug("ADAPTATEUR JPA : Soft delete de la tâche {}", id);
@@ -303,7 +209,7 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
      * et décompose chaque champ pour le passer au @Query JPQL
      * du TaskRepository.
      *
-     * FLUX :
+     * FLUX COMPLET :
      * TaskManager.searchTasks(criteria, ...)
      *   → TaskPersistencePort.searchTasks(criteria, pageable)  [interface]
      *     → TaskPersistenceAdapter.searchTasks(criteria, pageable) [CETTE MÉTHODE]
@@ -313,32 +219,20 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
      *
      * PRINCIPE ":param IS NULL OR condition" DANS LE @Query :
      * ────────────────────────────────────────────────────────
-     * C'est le cœur du système de filtres dynamiques en JPQL.
-     *
      * Quand un paramètre est null :
-     *   (:param IS NULL)  → TRUE  → le filtre est ignoré (condition court-circuitée)
+     *   (:param IS NULL)  → TRUE  → le filtre est ignoré (court-circuit)
      *
      * Quand un paramètre est non-null :
      *   (:param IS NULL)  → FALSE → la condition après OR est évaluée
      *
      * EXEMPLE CONCRET avec keyword = "urgence" et status = null :
-     *   AND (NULL IS NULL                           → FALSE
-     *      OR LOWER(title) LIKE '%urgence%'         → évalué
-     *      OR LOWER(description) LIKE '%urgence%')  → évalué)
-     *   AND (NULL IS NULL                   → TRUE  → filtre ignoré)
+     *   AND (NULL IS NULL                           → TRUE  → ignoré)
+     *   AND (:status IS NULL OR t.status = :status)  → TRUE  → ignoré)
      *
-     *   → Résultat SQL équivalent :
-     *   WHERE ... AND (title LIKE '%urgence%' OR description LIKE '%urgence%')
+     *   → Résultat SQL : WHERE deletedAt IS NULL
+     *       AND (title LIKE '%urgence%' OR description LIKE '%urgence%')
      *
-     * PRINCIPE DE PAGINATION :
-     * Spring Data Pageable gère automatiquement le LIMIT/OFFSET via page et size.
-     * Le tri est aussi géré par Pageable (sortBy, sortDir).
-     *
-     * PRINCIPE .map(TaskEntity::toDomain) :
-     * Transforme chaque TaskEntity de la page en Task (record domaine).
-     * C'est un mapping fonctionnel qui préserve la pagination (nombre total, etc.).
-     *
-     * @param criteria Les critères de recherche (tous optionnels via IS NULL OR pattern)
+     * @param criteria Les critères de recherche (tous optionnels)
      * @param pageable La pagination et le tri
      * @return Une page de Task (objets domaine, pas des entités JPA)
      */
@@ -348,9 +242,7 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 criteria.keyword(), criteria.userId(), criteria.assigneeId(),
                 criteria.status(), criteria.priority());
 
-        // Le TaskRepository.searchTasks() attend les paramètres décomposés
-        // car JPQL @Param nécessite des paramètres individuels (pas de record direct).
-        // On déstructure le Parameter Object ici → traduction Port vers JPA.
+        // Déstructure le Parameter Object en paramètres individuels pour JPQL
         Page<TaskEntity> result = taskRepository.searchTasks(
                 criteria.keyword(),
                 criteria.userId(),
@@ -364,9 +256,8 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 pageable
         );
 
-        // .map(TaskEntity::toDomain) : transformation de chaque élément de la page.
-        // Page<T> est immuable, .map() retourne une NOUVELLE page avec les éléments transformés.
-        // Les métadonnées de pagination (totalElements, totalPages) sont préservées.
+        // .map(TaskEntity::toDomain) : transforme chaque TaskEntity en Task (record domaine)
+        // Les métadonnées de pagination (totalElements, totalPages) sont préservées
         return result.map(TaskEntity::toDomain);
     }
 }
