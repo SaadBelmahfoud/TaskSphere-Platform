@@ -244,4 +244,197 @@ public interface TaskPersistencePort {
      *               WHERE deleted_at IS NULL AND assignee_id = :assigneeId
      */
     long countByAssigneeId(String assigneeId);
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES RBAC-AWARE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * MÉTHODES RBAC-AWARE — Comptage avec filtre utilisateur optionnel
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * NOUVEAU CONCEPT — RBAC-AWARE QUERY :
+     * ─────────────────────────────────
+     * Ces méthodes acceptent un paramètre `username` nullable qui permet
+     * de filtrer les résultats selon le rôle de l'utilisateur connecté :
+     *
+     * ┌────────────────────────────────────────────────────────────────┐
+     * │  ADMIN / MANAGER : username = null                             │
+     * │  → Le filtre utilisateur est ignoré                           │
+     * │  → On compte TOUTES les tâches (vue globale)                  │
+     * │                                                                │
+     * │  USER : username = "saad@example.com"                         │
+     * │  → On filtre par userId = username OR assigneeId = username    │
+     * │  → Un USER voit ses tâches CRÉÉES + les tâches ASSIGNÉES      │
+     * │                                                                │
+     * │  POURQUOI "CRÉÉES + ASSIGNÉES" ?                              │
+     * │  → RBAC USER : un utilisateur peut créer des tâches            │
+     * │    ET se voir assigner des tâches par un MANAGER.              │
+     * │  → Le Dashboard USER doit montrer les DEUX catégories.        │
+     * └────────────────────────────────────────────────────────────────┘
+     *
+     * PRINCIPE DU FILTRAGE OPTIONNEL EN JPQL :
+     * ────────────────────────────────────────
+     * La clause ":username IS NULL OR condition" est un pattern classique
+     * en JPQL qui permet d'ignorer un filtre quand le paramètre est null.
+     *
+     * Si username = null  : "NULL IS NULL" = TRUE  → court-circuit, filtre ignoré
+     * Si username = "x"  : "NULL IS NULL" = FALSE → on évalue la condition
+     *
+     * PRINCIPE DE SURCHARGE (Method Overloading) :
+     * ─────────────────────────────────────────────
+     * Java permet d'avoir plusieurs méthodes avec le même nom si les types
+     * de paramètres diffèrent. Exemple :
+     * - countByStatus(TaskStatus status) → long      (existe déjà)
+     * - countByStatus(String username)    → Map       (nouveau)
+     *
+     * Le compilateur distingue les deux grâce au TYPE du paramètre.
+     * Le DashboardController appelle countByStatus(String) car il passe
+     * un username (String), jamais un TaskStatus.
+     */
+
+    /**
+     * Compte les tâches actives, avec filtre RBAC optionnel.
+     *
+     * UTILISATION :
+     * - ADMIN/MANAGER : countActiveTasks(null)  → toutes les tâches actives
+     * - USER          : countActiveTasks("email") → tâches créées OU assignées à email
+     *
+     * SQL GÉNÉRÉ (username = null) :
+     * SELECT COUNT(t) FROM tasks t WHERE t.deleted_at IS NULL
+     *
+     * SQL GÉNÉRÉ (username = "email") :
+     * SELECT COUNT(t) FROM tasks t WHERE t.deleted_at IS NULL
+     *   AND (t.user_id = 'email' OR t.assignee_id = 'email')
+     *
+     * @param username L'email de l'utilisateur (null = pas de filtre, vue globale)
+     * @return Le nombre de tâches actives (filtrées ou non selon le rôle)
+     */
+    long countActiveTasks(String username);
+
+    /**
+     * Compte les tâches actives par statut, avec filtre RBAC optionnel.
+     *
+     * SURCHARGE : Cette méthode est une surcharge de countByStatus(TaskStatus).
+     * Le compilateur distingue les deux grâce au type du paramètre :
+     * - countByStatus(TaskStatus status)  → long  (compte pour UN statut)
+     * - countByStatus(String username)    → Map   (compte pour TOUS les statuts, avec RBAC)
+     *
+     * UTILISATION :
+     * - ADMIN/MANAGER : countByStatus(null)  → { "TODO": 10, "DOING": 8, "DONE": 7 }
+     * - USER          : countByStatus("email") → stats de l'utilisateur uniquement
+     *
+     * SQL GÉNÉRÉ :
+     * SELECT t.status, COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     * GROUP BY t.status
+     *
+     * RETOURNE UN MAP :
+     * Chaque clé est le nom de l'enum (TODO, DOING, DONE).
+     * Si un statut n'a aucune tâche, il n'apparaît PAS dans le Map
+     * (comportement normal du GROUP BY SQL).
+     *
+     * @param username L'email de l'utilisateur (null = pas de filtre RBAC)
+     * @return Map { "TODO": N, "DOING": N, "DONE": N }
+     */
+    Map<String, Long> countByStatus(String username);
+
+    /**
+     * Compte les tâches actives par priorité, avec filtre RBAC optionnel.
+     *
+     * SURCHARGE : Cette méthode est une surcharge de countByPriority().
+     * - countByPriority()             → Map (comptage global, sans filtre)
+     * - countByPriority(String user)  → Map (comptage filtré par utilisateur)
+     *
+     * UTILISATION :
+     * - ADMIN/MANAGER : countByPriority(null)  → { "LOW": 5, "MEDIUM": 12, ... }
+     * - USER          : countByPriority("email") → stats de l'utilisateur uniquement
+     *
+     * SQL GÉNÉRÉ :
+     * SELECT t.priority, COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     * GROUP BY t.priority
+     *
+     * @param username L'email de l'utilisateur (null = pas de filtre RBAC)
+     * @return Map { "LOW": N, "MEDIUM": N, "HIGH": N, "CRITICAL": N }
+     */
+    Map<String, Long> countByPriority(String username);
+
+    /**
+     * Compte les tâches actives créées après une date, avec filtre RBAC optionnel.
+     *
+     * UTILISATION : Dashboard card "Tâches créées cette semaine"
+     * - startOfWeek = LocalDate.now().with(previousOrSame(MONDAY)).atStartOfDay()
+     *
+     * SQL GÉNÉRÉ (username = null) :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL AND t.created_at >= :after
+     *
+     * SQL GÉNÉRÉ (username = "email") :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL AND t.created_at >= :after
+     *   AND (t.user_id = 'email' OR t.assignee_id = 'email')
+     *
+     * NOTE : On filtre sur createdAt (pas completedAt) car on veut les tâches
+     * CRÉÉES cette semaine, pas celles terminées cette semaine.
+     *
+     * @param username L'email de l'utilisateur (null = pas de filtre RBAC)
+     * @param after    La date/heure de référence (créées après cette date)
+     * @return Le nombre de tâches créées après la date spécifiée
+     */
+    long countCreatedAfter(String username, LocalDateTime after);
+
+    /**
+     * Compte les tâches actives complétées après une date, avec filtre RBAC optionnel.
+     *
+     * UTILISATION : Dashboard card "Tâches terminées cette semaine"
+     *
+     * SQL GÉNÉRÉ (username = null) :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL AND t.completed_at >= :after
+     *
+     * SQL GÉNÉRÉ (username = "email") :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL AND t.completed_at >= :after
+     *   AND (t.user_id = 'email' OR t.assignee_id = 'email')
+     *
+     * NOTE : completedAt est non-null UNIQUEMENT quand status = DONE.
+     * Donc cette méthode compte implicitement les tâches DONE terminées après la date.
+     *
+     * @param username L'email de l'utilisateur (null = pas de filtre RBAC)
+     * @param after    La date/heure de référence (complétées après cette date)
+     * @return Le nombre de tâches complétées après la date spécifiée
+     */
+    long countCompletedAfter(String username, LocalDateTime after);
+
+    /**
+     * Compte les tâches en retard, avec filtre RBAC optionnel.
+     *
+     * DÉFINITION "EN RETARD" :
+     * - dueDate < NOW() → la date d'échéance est dépassée
+     * - status ≠ DONE → la tâche n'est pas encore terminée
+     * - deletedAt IS NULL → la tâche est active (non archivée)
+     *
+     * NOTE SUR LE NOM : Cette méthode s'appelle countOverdueTasks (avec "Tasks")
+     * et non countOverdue, car countOverdue() existe déjà (sans paramètre).
+     * C'est un choix de nommage explicite : countOverdueTasks(String) = version RBAC.
+     *
+     * UTILISATION :
+     * - ADMIN/MANAGER : countOverdueTasks(null)  → toutes les tâches en retard
+     * - USER          : countOverdueTasks("email") → tâches en retard de l'utilisateur
+     *
+     * SQL GÉNÉRÉ :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND t.due_date < CURRENT_TIMESTAMP
+     *   AND t.status <> 'DONE'
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     *
+     * @param username L'email de l'utilisateur (null = pas de filtre RBAC)
+     * @return Le nombre de tâches en retard (filtrées ou non selon le rôle)
+     */
+    long countOverdueTasks(String username);
 }

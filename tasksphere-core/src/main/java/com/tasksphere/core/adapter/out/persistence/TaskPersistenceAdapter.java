@@ -8,6 +8,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -361,5 +362,153 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     public long countByAssigneeId(String assigneeId) {
         log.debug("ADAPTATEUR JPA : Comptage des tâches assignées à {}", assigneeId);
         return taskRepository.countByAssigneeIdAndDeletedAtIsNull(assigneeId);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES RBAC-AWARE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * IMPLÉMENTATION RBAC-AWARE — Comptage avec filtre utilisateur
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Ces méthodes implémentent les 6 nouvelles signatures
+     * du port TaskPersistencePort. Elles délèguent au Repository JPA
+     * qui exécute les @Query avec le pattern ":username IS NULL OR".
+     *
+     * FLUX COMPLET :
+     * DashboardController.getDashboardStats()
+     *   → taskPersistencePort.countActiveTasks(username)       [port — interface]
+     *     → TaskPersistenceAdapter.countActiveTasks(username)   [CETTE CLASSE]
+     *       → taskRepository.countActiveTasks(username)         [Spring Data JPA]
+     *         → @Query SQL avec filtre optionnel                [BDD]
+     *
+     * RÔLE DE L'ADAPTATEUR ICI :
+     * ──────────────────────────
+     * L'adaptateur fait principalement de la "pass-through" (transfert direct)
+     * car les @Query JPA retournent déjà le bon type (long ou List<Object[]>).
+     *
+     * Cependant, pour les méthodes GROUP BY (countByStatus, countByPriority),
+     * l'adaptateur transforme la List<Object[]> en Map<String, Long>.
+     * C'est une LOGIQUE D'ADAPTATION légitime :
+     * - Le Repository retourne des projections brutes (Object[])
+     * - Le Port définit le contrat métier (Map<String, Long>)
+     * - L'adaptateur fait la traduction
+     */
+
+    /**
+     * Compte les tâches actives avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre.
+     *
+     * @param username null = vue globale (ADMIN/MANAGER), email = filtre USER
+     * @return Nombre de tâches actives (filtrées ou non)
+     */
+    @Override
+    public long countActiveTasks(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches actives (RBAC username={})",
+                username != null ? username : "GLOBAL");
+        return taskRepository.countActiveTasks(username);
+    }
+
+    /**
+     * Compte les tâches actives par statut avec filtre RBAC optionnel.
+     *
+     * TRANSFORMATION Object[] → Map<String, Long> :
+     * ──────────────────────────────────────────
+     * Le Repository retourne List<Object[]> depuis le GROUP BY.
+     * Chaque Object[] = [TaskStatus enum, Long count].
+     * L'adaptateur transforme en Map<String, Long> pour le contrat du port.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @return Map { "TODO": N, "DOING": N, "DONE": N }
+     */
+    @Override
+    public Map<String, Long> countByStatus(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage par statut (RBAC username={})",
+                username != null ? username : "GLOBAL");
+
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Object[] row : taskRepository.countGroupByStatus(username)) {
+            Task.TaskStatus status = (Task.TaskStatus) row[0];
+            Long count = (Long) row[1];
+            result.put(status.name(), count);
+        }
+        return result;
+    }
+
+    /**
+     * Compte les tâches actives par priorité avec filtre RBAC optionnel.
+     *
+     * TRANSFORMATION Object[] → Map<String, Long> :
+     * Même pattern que countByStatus(String) mais pour les priorités.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @return Map { "LOW": N, "MEDIUM": N, "HIGH": N, "CRITICAL": N }
+     */
+    @Override
+    public Map<String, Long> countByPriority(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage par priorité (RBAC username={})",
+                username != null ? username : "GLOBAL");
+
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Object[] row : taskRepository.countGroupByPriorityFiltered(username)) {
+            Task.TaskPriority priority = (Task.TaskPriority) row[0];
+            Long count = (Long) row[1];
+            result.put(priority.name(), count);
+        }
+        return result;
+    }
+
+    /**
+     * Compte les tâches actives créées après une date avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre date + RBAC.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @param after    Date de référence (créées après cette date)
+     * @return Nombre de tâches créées après la date
+     */
+    @Override
+    public long countCreatedAfter(String username, LocalDateTime after) {
+        log.debug("ADAPTATEUR JPA : Comptage tâches créées après {} (RBAC username={})",
+                after, username != null ? username : "GLOBAL");
+        return taskRepository.countCreatedAfter(username, after);
+    }
+
+    /**
+     * Compte les tâches actives complétées après une date avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre date + RBAC.
+     *
+     * NOTE : completedAt est non-null uniquement pour les tâches DONE.
+     * Cette méthode ne compte donc que les tâches terminées.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @param after    Date de référence (complétées après cette date)
+     * @return Nombre de tâches complétées après la date
+     */
+    @Override
+    public long countCompletedAfter(String username, LocalDateTime after) {
+        log.debug("ADAPTATEUR JPA : Comptage tâches complétées après {} (RBAC username={})",
+                after, username != null ? username : "GLOBAL");
+        return taskRepository.countCompletedAfter(username, after);
+    }
+
+    /**
+     * Compte les tâches en retard avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre RBAC
+     * + les conditions "en retard" (dueDate < now ET status ≠ DONE).
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @return Nombre de tâches en retard (filtrées ou non)
+     */
+    @Override
+    public long countOverdueTasks(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage tâches en retard (RBAC username={})",
+                username != null ? username : "GLOBAL");
+        return taskRepository.countOverdueTasks(username);
     }
 }

@@ -146,7 +146,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * AVANTAGE : Pas besoin d'écrire de @Query pour des COUNT simples.
      * Spring Data s'en occupe à la compilation via le proxy dynamique.
      *
-     * POURQUOI DES MÉTHODES SÉPARÉES ET PAS UN @Query GÉNÉRIQUE ?
+     * POURQUOI DES MÉTHODES SÉPARÉES ET PAS UN @QUERY GÉNÉRIQUE ?
      * → Chaque méthode a un nom explicite → auto-documentation
      * → Spring Data peut optimiser le COUNT (pas de création d'entité, juste un long)
      * → Testabilité : on peut vérifier chaque comptage indépendamment
@@ -239,4 +239,172 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
             "AND t.dueDate < CURRENT_TIMESTAMP " +
             "AND t.status <> 'DONE'")
     long countOverdue();
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES RBAC-AWARE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * REQUÊTES @QUERY RBAC-AWARE — Filtre utilisateur optionnel
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * NOUVEAU CONCEPT — ":param IS NULL OR" POUR LE RBAC :
+     * ──────────────────────────────────────────────────
+     * Toutes les méthodes ci-dessous utilisent le pattern :
+     *   AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)
+     *
+     * CE PATTERN PERMET :
+     * ┌──────────────────────────────────────────────────────────────────┐
+     * │  Si username = null (ADMIN/MANAGER) :                          │
+     * │  → "NULL IS NULL" = TRUE → le filtre est court-circuité        │
+     * │  → On compte TOUTES les tâches (vue globale)                   │
+     * │                                                                  │
+     * │  Si username = "email" (USER) :                                 │
+     * │  → "NULL IS NULL" = FALSE → on évalue le OR                    │
+     * │  → On ne compte que les tâches où email est créateur            │
+     * │    OU assignataire                                              │
+     * └──────────────────────────────────────────────────────────────────┘
+     *
+     * AVANTAGE vs DEUX REQUÊTES SÉPARÉES :
+     * - 1 seule méthode = 1 seul endroit à maintenir
+     * - Le filtre RBAC est géré au niveau SQL (pas en Java)
+     * - La BDD optimise mieux qu'une itération en mémoire
+     *
+     * POURQUOI ON N'UTILISE PAS COUNT(DISTINCT t) ?
+     * → On filtre sur une SEULE table (TaskEntity) avec des OR.
+     *   Chaque ligne de tâche ne peut apparaître qu'une seule fois
+     *   dans le résultat → pas de risque de doublons → COUNT(t) suffit.
+     *
+     * PERFORMANCE :
+     * ┌──────────────────────────────────────────────────────────────┐
+     * │  Chaque méthode exécute UNE SEULE requête SQL.               │
+     * │  Pas de N+1, pas de chargement d'entités en mémoire.         │
+     * │  Le COUNT est calculé par la BDD → performances optimales.   │
+     * └──────────────────────────────────────────────────────────────┘
+     */
+
+    /**
+     * Compte les tâches actives avec filtre RBAC optionnel.
+     *
+     * SQL (username = null) :
+     * SELECT COUNT(t) FROM tasks t WHERE t.deleted_at IS NULL
+     *
+     * SQL (username = "email") :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND (t.user_id = 'email' OR t.assignee_id = 'email')
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countActiveTasks(@Param("username") String username);
+
+    /**
+     * Compte les tâches actives par statut avec filtre RBAC optionnel.
+     *
+     * RETOURNE : List<Object[]> où chaque Object[] contient :
+     * - [0] = TaskStatus (enum) : TODO, DOING, ou DONE
+     * - [1] = Long : le nombre de tâches avec ce statut
+     *
+     * SQL :
+     * SELECT t.status, COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     * GROUP BY t.status
+     *
+     * TRANSFORMATION EN MAP (dans l'adaptateur) :
+     * for (Object[] row : result) {
+     *     map.put(((TaskStatus) row[0]).name(), (Long) row[1]);
+     * }
+     * → { "TODO": 10, "DOING": 8, "DONE": 7 }
+     */
+    @Query("SELECT t.status, COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username) " +
+            "GROUP BY t.status")
+    List<Object[]> countGroupByStatus(@Param("username") String username);
+
+    /**
+     * Compte les tâches actives par priorité avec filtre RBAC optionnel.
+     *
+     * RETOURNE : List<Object[]> où chaque Object[] contient :
+     * - [0] = TaskPriority (enum) : LOW, MEDIUM, HIGH, CRITICAL
+     * - [1] = Long : le nombre de tâches avec cette priorité
+     *
+     * SQL :
+     * SELECT t.priority, COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     * GROUP BY t.priority
+     */
+    @Query("SELECT t.priority, COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username) " +
+            "GROUP BY t.priority")
+    List<Object[]> countGroupByPriorityFiltered(@Param("username") String username);
+
+    /**
+     * Compte les tâches actives créées après une date, avec filtre RBAC optionnel.
+     *
+     * UTILISATION : Dashboard card "Créées cette semaine"
+     *
+     * SQL :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND t.createdAt >= :after
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     *
+     * NOTE : completedAt est null pour les tâches non terminées.
+     * On filtre sur createdAt car on veut les tâches CRÉÉES, pas terminées.
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.createdAt >= :after " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countCreatedAfter(@Param("username") String username, @Param("after") LocalDateTime after);
+
+    /**
+     * Compte les tâches actives complétées après une date, avec filtre RBAC optionnel.
+     *
+     * UTILISATION : Dashboard card "Terminées cette semaine"
+     *
+     * SQL :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND t.completedAt >= :after
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     *
+     * NOTE : completedAt est non-null UNIQUEMENT quand status = DONE.
+     * Donc cette méthode compte implicitement les tâches terminées.
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.completedAt >= :after " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countCompletedAfter(@Param("username") String username, @Param("after") LocalDateTime after);
+
+    /**
+     * Compte les tâches en retard avec filtre RBAC optionnel.
+     *
+     * DÉFINITION "EN RETARD" :
+     * - dueDate < CURRENT_TIMESTAMP → date d'échéance dépassée
+     * - status <> 'DONE' → pas encore terminée
+     * - deletedAt IS NULL → active (non archivée)
+     *
+     * SQL :
+     * SELECT COUNT(t) FROM tasks t
+     * WHERE t.deleted_at IS NULL
+     *   AND t.due_date < CURRENT_TIMESTAMP
+     *   AND t.status <> 'DONE'
+     *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
+     *
+     * NOTE JPQL : CURRENT_TIMESTAMP est supporté par H2 (dev) et PostgreSQL (prod).
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.dueDate < CURRENT_TIMESTAMP " +
+            "AND t.status <> 'DONE' " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countOverdueTasks(@Param("username") String username);
 }
