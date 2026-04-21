@@ -8,6 +8,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /*
@@ -259,5 +261,105 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         // .map(TaskEntity::toDomain) : transforme chaque TaskEntity en Task (record domaine)
         // Les métadonnées de pagination (totalElements, totalPages) sont préservées
         return result.map(TaskEntity::toDomain);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES DE COMPTAGE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * COMPTAGE POUR DASHBOARD — Section 6 : Collaboration
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : L'adaptateur traduit les méthodes de comptage du port
+     * en appels au Repository JPA.
+     *
+     * AVANTAGE vs itération en mémoire :
+     * - countAll() → 1 requête COUNT(*) au lieu de SELECT * + .size()
+     * - countByStatus() → 1 COUNT avec WHERE au lieu de filtre Java
+     * - countByPriority() → 1 GROUP BY au lieu de 4 boucles
+     *
+     * POURQUOI PAS DE CONVERSION ENTITY → DOMAIN ?
+     * → Les méthodes de comptage retournent des primitives (long)
+     *   ou des Map<String, Long>. Il n'y a PAS de mapping Entity ↔ Domain
+     *   à faire. C'est un avantage des COUNT : on ne charge aucune entité.
+     *
+     * PERFORMANCE :
+     * ┌─────────────────────────────────────────────────────────────┐
+     * │  SANS count (itération) :                                   │
+     * │  SELECT * FROM tasks WHERE deleted_at IS NULL               │
+     * │  → Charge N entités complètes en mémoire                     │
+     * │  → Pour 10 000 tâches : ~10 MB en mémoire JVM               │
+     * │                                                              │
+     * │  AVEC count (méthodes dédiées) :                            │
+     * │  SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL         │
+     * │  → Retourne un seul long (8 octets)                          │
+     * │  → Pour 10 000 tâches : 8 octets en mémoire JVM             │
+     * └─────────────────────────────────────────────────────────────┘
+     */
+
+    @Override
+    public long countAll() {
+        log.debug("ADAPTATEUR JPA : Comptage de toutes les tâches actives");
+        return taskRepository.countByDeletedAtIsNull();
+    }
+
+    @Override
+    public long countByStatus(Task.TaskStatus status) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches avec statut {}", status);
+        return taskRepository.countByStatusAndDeletedAtIsNull(status);
+    }
+
+    @Override
+    public Map<String, Long> countByPriority() {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches par priorité");
+
+        /**
+         * ═══════════════════════════════════════════════════════════
+         * TRANSFORMATION Object[] → Map<String, Long>
+         * ═══════════════════════════════════════════════════════════
+         *
+         * Le @Query GROUP BY retourne une List<Object[]> :
+         * - row[0] = TaskPriority (enum) ex: HIGH
+         * - row[1] = Long (count) ex: 3
+         *
+         * On transforme en Map<String, Long> :
+         * { "HIGH": 3, "MEDIUM": 12, "LOW": 5, "CRITICAL": 1 }
+         *
+         * POURQUOI UN LinkedHashMap ?
+         * → Préserve l'ordre d'insertion (contrairement à HashMap)
+         * → L'ordre des priorités sera celui retourné par la BDD
+         *   (généralement l'ordre de déclaration de l'enum en JPQL)
+         *
+         * NOTE : Si une priorité n'a aucune tâche, elle n'apparaîtra
+         * PAS dans le résultat GROUP BY. Le DashboardService doit
+         * gérer les clés manquantes (afficher 0 par défaut).
+         */
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Object[] row : taskRepository.countGroupByPriority()) {
+            Task.TaskPriority priority = (Task.TaskPriority) row[0];
+            Long count = (Long) row[1];
+            result.put(priority.name(), count);
+        }
+        return result;
+    }
+
+    @Override
+    public long countOverdue() {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches en retard");
+        return taskRepository.countOverdue();
+    }
+
+    @Override
+    public long countByUserId(String userId) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches de l'utilisateur {}", userId);
+        return taskRepository.countByUserIdAndDeletedAtIsNull(userId);
+    }
+
+    @Override
+    public long countByAssigneeId(String assigneeId) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches assignées à {}", assigneeId);
+        return taskRepository.countByAssigneeIdAndDeletedAtIsNull(assigneeId);
     }
 }

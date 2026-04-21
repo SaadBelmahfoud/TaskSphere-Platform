@@ -11,6 +11,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -19,7 +20,7 @@ import java.util.Optional;
  * ═══════════════════════════════════════════════════════════════════
  *
  * INTERFACE DU PORT DE SORTIE : Ce repository implémente
- *间接ement le port TaskPersistencePort via TaskPersistenceAdapter.
+ * indirectement le port TaskPersistencePort via TaskPersistenceAdapter.
  *
  * RAPPEL : Spring Data JPA génère automatiquement l'implémentation
  * de cette interface au démarrage. On n'écrit PAS de classe d'implémentation.
@@ -121,4 +122,121 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
             @Param("createdTo") LocalDateTime createdTo,
             Pageable pageable
     );
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES DE COMPTAGE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * COMPTAGE POUR DASHBOARD — Section 6 : Collaboration
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Query Derivation de Spring Data JPA
+     * ─────────────────────────────────────────────────
+     * Spring Data traduit le nom de la méthode en JPQL/SQL automatiquement.
+     *
+     * countByDeletedAtIsNull
+     * → SELECT COUNT(t) FROM TaskEntity t WHERE t.deletedAt IS NULL
+     *
+     * countByStatusAndDeletedAtIsNull
+     * → SELECT COUNT(t) FROM TaskEntity t
+     *   WHERE t.status = :status AND t.deletedAt IS NULL
+     *
+     * AVANTAGE : Pas besoin d'écrire de @Query pour des COUNT simples.
+     * Spring Data s'en occupe à la compilation via le proxy dynamique.
+     *
+     * POURQUOI DES MÉTHODES SÉPARÉES ET PAS UN @Query GÉNÉRIQUE ?
+     * → Chaque méthode a un nom explicite → auto-documentation
+     * → Spring Data peut optimiser le COUNT (pas de création d'entité, juste un long)
+     * → Testabilité : on peut vérifier chaque comptage indépendamment
+     */
+
+    /**
+     * Compte toutes les tâches actives.
+     * SQL : SELECT COUNT(t) FROM tasks t WHERE t.deleted_at IS NULL
+     */
+    long countByDeletedAtIsNull();
+
+    /**
+     * Compte les tâches actives par statut.
+     * SQL : SELECT COUNT(t) FROM tasks t WHERE t.status = ? AND t.deleted_at IS NULL
+     */
+    long countByStatusAndDeletedAtIsNull(TaskStatus status);
+
+    /**
+     * Compte les tâches actives créées par un utilisateur.
+     * SQL : SELECT COUNT(t) FROM tasks t WHERE t.user_id = ? AND t.deleted_at IS NULL
+     */
+    long countByUserIdAndDeletedAtIsNull(String userId);
+
+    /**
+     * Compte les tâches actives assignées à un utilisateur.
+     * SQL : SELECT COUNT(t) FROM tasks t WHERE t.assignee_id = ? AND t.deleted_at IS NULL
+     *
+     * NOTE : Spring Data gère correctement les valeurs NULL pour assigneeId.
+     * Si assigneeId = null, la requête devient :
+     * WHERE assignee_id IS NULL AND deleted_at IS NULL
+     * → Compte les tâches NON assignées (ce qui n'est pas notre cas d'usage,
+     *   car on passe toujours un email non-null).
+     */
+    long countByAssigneeIdAndDeletedAtIsNull(String assigneeId);
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * COMPTAGE PAR PRIORITÉ — GROUP BY (requête @Query explicite)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Cette méthode retourne une liste de Object[] (projection JPQL).
+     * ────────────────────────────────────────────────────────────
+     * Chaque Object[] contient 2 éléments :
+     * - [0] = la priorité (TaskPriority enum)
+     * - [1] = le nombre de tâches (Long)
+     *
+     * POURQUOI UN @QUERY ET PAS UNE MÉTHODE DÉRIVÉE ?
+     * → Spring Data ne supporte pas le GROUP BY en query derivation.
+     *   On ne peut PAS écrire "countGroupByPriorityAndDeletedAtIsNull".
+     *   Il faut un @Query explicite avec GROUP BY.
+     *
+     * COMMENT UTILISER LE RÉSULTAT DANS L'ADAPTATEUR ?
+     * ─────────────────────────────────────────────────
+     * for (Object[] row : repository.countGroupByPriority()) {
+     *     TaskPriority priority = (TaskPriority) row[0];
+     *     Long count = (Long) row[1];
+     *     map.put(priority.name(), count);
+     * }
+     *
+     * POURQUOI ON NE RETOURNE PAS UN MAP DÉJÀ CONSTRUIT ?
+     * → Le Repository JPA travaille avec des entités/projections.
+     *   La transformation en Map<String, Long> est de la logique
+     *   d'adaptation → c'est le rôle de TaskPersistenceAdapter.
+     */
+    @Query("SELECT t.priority, COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "GROUP BY t.priority")
+    List<Object[]> countGroupByPriority();
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * COMPTAGE DES TÂCHES EN RETARD
+     * ═══════════════════════════════════════════════════════════
+     *
+     * DÉFINITION "EN RETARD" :
+     * - dueDate < NOW() → la date d'échéance est dépassée
+     * - status ≠ DONE → la tâche n'est pas encore terminée
+     * - deletedAt IS NULL → la tâche est active (non archivée)
+     *
+     * POURQUOI UN @QUERY ET PAS UNE MÉTHODE DÉRIVÉE ?
+     * → On compare dueDate avec la fonction CURRENT_TIMESTAMP (now).
+     *   Spring Data ne supporte pas les expressions temporelles
+     *   dans les noms de méthodes dérivées.
+     *
+     * NOTE JPQL : CURRENT_TIMESTAMP = la date/heure actuelle du serveur BDD.
+     * Pour H2 (dev) et PostgreSQL (prod), c'est supporté nativement.
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.dueDate < CURRENT_TIMESTAMP " +
+            "AND t.status <> 'DONE'")
+    long countOverdue();
 }

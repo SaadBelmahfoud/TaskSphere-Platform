@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Optional;
 
 /*
@@ -32,6 +33,7 @@ import java.util.Optional;
  *
  * SPRINT 1 : Ajout de findById, update, et filtrage par utilisateur.
  * SPRINT 2 : Ajout de searchTasks avec critères dynamiques (Parameter Object Pattern).
+ * SPRINT 3 (Section 6) : Ajout des méthodes de comptage pour le Dashboard.
  */
 public interface TaskPersistencePort {
 
@@ -130,4 +132,116 @@ public interface TaskPersistencePort {
             LocalDateTime createdFrom,     // Date de création minimum
             LocalDateTime createdTo        // Date de création maximum
     ) {}
+
+    // ═══════════════════════════════════════════════════════
+    // STATISTIQUES POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * MÉTHODES DE COMPTAGE — Section 6 : Dashboard & Collaboration
+     * ═══════════════════════════════════════════════════════════
+     *
+     * POURQUOI DES MÉTHODES DE COMPTAGE SPÉCIFIQUES ?
+     * ────────────────────────────────────────────
+     * Le DashboardService doit afficher des KPI :
+     * - Nombre total de tâches
+     * - Nombre de tâches par statut (TODO, DOING, DONE)
+     * - Nombre de tâches en retard (dueDate < now ET status ≠ DONE)
+     * - Répartition par priorité
+     *
+     * SANS ces méthodes, le DashboardService devrait :
+     * 1. Charger TOUTES les tâches en mémoire (SELECT * FROM tasks)
+     * 2. Itérer en Java pour compter (task.status() == TODO ? count++ : ...)
+     *
+     * AVEC ces méthodes, on délègue le COUNT à la BDD :
+     * → 1 requête SQL COUNT() optimisée au lieu de N résultats chargés en mémoire
+     *
+     * PRINCIPE DDD : Le port reste le contrat UNIQUE.
+     * Le DashboardService injecte TaskPersistencePort et appelle countAll(),
+     * countByStatus(), etc. Il ne connaît ni SQL ni JPA.
+     *
+     * PRINCIPE ISP (Interface Segregation Principle) :
+     * On ajoute au port existant plutôt que de créer un "DashboardPort" séparé,
+     * car les données comptées sont des tâches — le port de tâches est le bon endroit.
+     */
+
+    /**
+     * Compte toutes les tâches actives (deletedAt IS NULL).
+     *
+     * UTILISÉ PAR : DashboardService.getGlobalStats() / getUserStats()
+     *
+     * SQL GÉNÉRÉ : SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL
+     */
+    long countAll();
+
+    /**
+     * Compte les tâches actives ayant un statut donné.
+     *
+     * UTILISÉ PAR : DashboardService pour le pie chart par statut
+     *
+     * SQL GÉNÉRÉ : SELECT COUNT(*) FROM tasks
+     *               WHERE deleted_at IS NULL AND status = :status
+     *
+     * @param status Le statut à filtrer (TODO, DOING, DONE)
+     */
+    long countByStatus(Task.TaskStatus status);
+
+    /**
+     * Compte les tâches actives par priorité.
+     *
+     * UTILISÉ PAR : DashboardService pour le bar chart par priorité
+     *
+     * RETOURNE UN MAP : { "LOW": 5, "MEDIUM": 12, "HIGH": 3, "CRITICAL": 1 }
+     * → Chaque clé est le nom de l'enum (TaskPriority.name())
+     * → Chaque valeur est le nombre de tâches actives avec cette priorité
+     *
+     * POURQUOI UN MAP ET PAS 4 MÉTHODES ?
+     * → Un seul appel au port = une seule transaction
+     * → L'adaptateur peut optimiser (1 requête avec GROUP BY, ou 4 requêtes parallèles)
+     *
+     * SQL POSSIBLE (optimisé) :
+     * SELECT t.priority, COUNT(*) FROM tasks t
+     * WHERE t.deleted_at IS NULL GROUP BY t.priority
+     */
+    Map<String, Long> countByPriority();
+
+    /**
+     * Compte les tâches en retard.
+     *
+     * DÉFINITION "EN RETARD" :
+     * - dueDate < NOW() → la date d'échéance est dépassée
+     * - status ≠ DONE → la tâche n'est pas encore terminée
+     * - deletedAt IS NULL → la tâche est active (non archivée)
+     *
+     * UTILISÉ PAR : DashboardService pour la carte "Tâches en retard"
+     *
+     * SQL GÉNÉRÉ : SELECT COUNT(*) FROM tasks
+     *               WHERE deleted_at IS NULL
+     *               AND due_date < CURRENT_TIMESTAMP
+     *               AND status <> 'DONE'
+     */
+    long countOverdue();
+
+    /**
+     * Compte les tâches actives créées par un utilisateur donné.
+     *
+     * UTILISÉ PAR : DashboardService.getUserStats(email)
+     * pour le Dashboard USER (ne voit que ses propres stats)
+     *
+     * SQL GÉNÉRÉ : SELECT COUNT(*) FROM tasks
+     *               WHERE deleted_at IS NULL AND user_id = :userId
+     */
+    long countByUserId(String userId);
+
+    /**
+     * Compte les tâches actives assignées à un utilisateur donné.
+     *
+     * UTILISÉ PAR : DashboardService.getUserStats(email)
+     * pour le Dashboard USER (compte les tâches qu'on lui a assignées)
+     *
+     * SQL GÉNÉRÉ : SELECT COUNT(*) FROM tasks
+     *               WHERE deleted_at IS NULL AND assignee_id = :assigneeId
+     */
+    long countByAssigneeId(String assigneeId);
 }

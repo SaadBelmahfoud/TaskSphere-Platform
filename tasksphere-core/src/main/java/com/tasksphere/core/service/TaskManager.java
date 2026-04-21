@@ -2,6 +2,7 @@ package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.domain.event.TaskCreatedEvent;
+import com.tasksphere.core.port.out.ActivityLogPersistencePort;
 import com.tasksphere.core.port.out.EventPublisherPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
@@ -25,7 +26,7 @@ import java.util.stream.Stream;
  * ═══════════════════════════════════════════════════════════════════
  *
  * ROLE : Cœur de la logique métier. Ce service implémente les
- * règles de gestion des tâches, y compris le RBAC.
+ * règles de gestion des tâches, y compris le RBAC et l'audit trail.
  *
  * ARCHITECTURE : Ce service est dans le DOMAINE (package service).
  * Il ne connaît ni HTTP (pas de @RestController), ni JPA (pas de @Entity).
@@ -43,6 +44,38 @@ import java.util.stream.Stream;
  * 1. TaskPersistencePort : port de sauvegarde (interface)
  * 2. EventPublisherPort : port de publication d'événements
  * 3. UserInformationPort : port de récupération d'infos utilisateur (IAM)
+ * 4. ActivityLogPersistencePort : port de journal d'audit (Section 6)
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * SECTION 6 — AUDIT TRAIL (Activity Log)
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PRINCIPE : Audit comme Side Effect
+ * ─────────────────────────────────
+ * L'audit n'est PAS la responsabilité principale du TaskManager.
+ * C'est un effet secondaire (side effect) de chaque opération d'écriture.
+ *
+ * On le capture APRÈS chaque opération réussie :
+ * 1. L'opération métier s'exécute (création, modification, etc.)
+ * 2. Si succès → on logge l'activité
+ * 3. Si l'audit échoue → on loggue un WARN mais on NE fait PAS échouer l'opération
+ *
+ * POURQUOI CE CHOIX ARCHITECTURAL ?
+ * ───────────────────────────────
+ * 1. SÉPARATION DES RESPONSABILITÉS : Le TaskManager gère les tâches.
+ *    L'audit est un cross-cutting concern (comme un aspect).
+ * 2. RÉSILIENCE : Si le service d'audit est indisponible, les tâches
+ *    continuent de fonctionner. L'audit est important mais pas critique.
+ * 3. TRANSACTION : L'audit est dans la MÊME transaction que l'opération.
+ *    Si la transaction rollback → l'audit est aussi annulé → cohérent.
+ *
+ * OPÉRATIONS AUDITÉES :
+ * ────────────────────
+ * createTask()          → TASK_CREATED
+ * updateTask()          → TASK_UPDATED
+ * updateTaskStatus()    → TASK_STATUS_CHANGED (avec old → new)
+ * assignTask()          → TASK_ASSIGNED ou TASK_UNASSIGNED
+ * deleteTask()          → TASK_DELETED
  */
 @Slf4j
 @Service
@@ -52,6 +85,18 @@ public class TaskManager {
     private final TaskPersistencePort persistencePort;
     private final EventPublisherPort eventPublisher;
     private final UserInformationPort userInformationPort;
+
+    /**
+     * Port d'audit trail (Section 6 — Collaboration).
+     *
+     * INJECTÉ PAR SPRING (constructor injection via @RequiredArgsConstructor).
+     * L'ActivityLogPersistencePort est une interface définie dans port/out/.
+     * Son implémentation (ActivityLogPersistenceAdapter) est dans adapter/out/persistence/.
+     *
+     * PRINCIPE DDD : Le service ne dépend que d'une interface, jamais d'une implémentation.
+     * Si l'audit change de backend (DB → Elasticsearch → Kafka), seul l'adapter change.
+     */
+    private final ActivityLogPersistencePort activityLogPort;
 
     // ═══════════════════════════════════════════════════════
     // CRÉATION DE TÂCHE
@@ -71,6 +116,7 @@ public class TaskManager {
      * 3. Appliquer les modifications optionnelles (priority, dueDate, assigneeId)
      * 4. Sauvegarder via le port de persistance
      * 5. Publier un événement TaskCreatedEvent
+     * 6. [Section 6] Logger l'activité TASK_CREATED
      *
      * @param title          Titre (obligatoire)
      * @param description   Description (optionnelle)
@@ -100,6 +146,21 @@ public class TaskManager {
 
         Task savedTask = persistencePort.save(taskToSave);
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
+
+        // ═══════════════════════════════════════════════════════
+        // [Section 6] AUDIT : Création de tâche
+        // ═══════════════════════════════════════════════════════
+        // On construit le détail de l'activité avec les informations
+        // optionnelles (priorité, assignataire) si elles sont renseignées.
+        StringBuilder details = new StringBuilder("Tâche créée");
+        if (savedTask.priority() != Task.TaskPriority.MEDIUM) {
+            details.append(" avec priorité ").append(savedTask.priority().name());
+        }
+        if (savedTask.assigneeId() != null) {
+            details.append(" assignée à ").append(savedTask.assigneeId());
+        }
+        logActivity(savedTask.id(), ActivityLogPersistencePort.ActionType.TASK_CREATED,
+                currentUsername, details.toString());
 
         log.info("SERVICE : Tâche créée avec succès (id: {}, user: {}, priority: {}, assignee: {})",
                 savedTask.id(), currentUsername, savedTask.priority(), savedTask.assigneeId());
@@ -205,6 +266,12 @@ public class TaskManager {
     // MISE À JOUR AVEC RBAC
     // ═══════════════════════════════════════════════════════
 
+    /**
+     * Met à jour une tâche.
+     *
+     * [Section 6] Audit : Après la mise à jour réussie, on loggue
+     * TASK_UPDATED avec les détails des champs modifiés.
+     */
     @Transactional
     public Optional<Task> updateTask(String taskId, String currentUsername, String currentRole,
                                      String title, String description, String priority, LocalDate dueDate) {
@@ -220,16 +287,34 @@ public class TaskManager {
 
         // Appliquer les modifications (immutabilité : chaque appel retourne une nouvelle instance)
         Task updatedTask = existingTask;
-        if (title != null && !title.isBlank())
+        StringBuilder details = new StringBuilder("Tâche modifiée");
+        if (title != null && !title.isBlank()) {
             updatedTask = updatedTask.update(title, updatedTask.description());
-        if (description != null)
+            details.append(" — titre changé");
+        }
+        if (description != null) {
             updatedTask = updatedTask.update(updatedTask.title(), description);
-        if (priority != null)
-            updatedTask = updatedTask.updatePriority(Task.TaskPriority.valueOf(priority));
-        if (dueDate != null)
+            details.append(" — description modifiée");
+        }
+        if (priority != null) {
+            Task.TaskPriority newPriority = Task.TaskPriority.valueOf(priority);
+            updatedTask = updatedTask.updatePriority(newPriority);
+            details.append(" — priorité → ").append(newPriority.name());
+        }
+        if (dueDate != null) {
             updatedTask = updatedTask.updateDueDate(dueDate);
+            details.append(" — date d'échéance → ").append(dueDate);
+        }
 
-        return Optional.of(persistencePort.save(updatedTask));
+        Task savedTask = persistencePort.save(updatedTask);
+
+        // ═══════════════════════════════════════════════════════
+        // [Section 6] AUDIT : Mise à jour de tâche
+        // ═══════════════════════════════════════════════════════
+        logActivity(taskId, ActivityLogPersistencePort.ActionType.TASK_UPDATED,
+                currentUsername, details.toString());
+
+        return Optional.of(savedTask);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -248,6 +333,8 @@ public class TaskManager {
      * UTILISÉ PAR LE KANBAN FRONTEND :
      * Le composant KanbanPage appelle useUpdateTaskStatusMutation()
      * qui invoque PATCH /tasks/{id}/status.
+     *
+     * [Section 6] Audit : Loggue TASK_STATUS_CHANGED avec la transition old → new.
      */
     @Transactional
     public Optional<Task> updateTaskStatus(String taskId, String currentUsername,
@@ -263,8 +350,20 @@ public class TaskManager {
 
         if (!isOwner && !isAssignee && !isAdmin && !isManager) return Optional.empty();
 
+        Task.TaskStatus oldStatus = existingTask.status();
         Task.TaskStatus status = Task.TaskStatus.valueOf(newStatus);
-        return Optional.of(persistencePort.save(existingTask.updateStatus(status)));
+        Task savedTask = persistencePort.save(existingTask.updateStatus(status));
+
+        // ═══════════════════════════════════════════════════════
+        // [Section 6] AUDIT : Changement de statut
+        // ═══════════════════════════════════════════════════════
+        // On capture la transition old → new pour l'audit.
+        // Exemple : "Statut changé : TODO → DOING"
+        String details = String.format("Statut changé : %s → %s", oldStatus.name(), status.name());
+        logActivity(taskId, ActivityLogPersistencePort.ActionType.TASK_STATUS_CHANGED,
+                currentUsername, details);
+
+        return Optional.of(savedTask);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -280,6 +379,8 @@ public class TaskManager {
      * @param currentUsername Email de l'utilisateur qui fait l'assignation
      * @param currentRole     Rôle de l'utilisateur (ADMIN/MANAGER requis)
      * @param assigneeId  Email de la personne à assigner (null = désassigner)
+     *
+     * [Section 6] Audit : Loggue TASK_ASSIGNED ou TASK_UNASSIGNED.
      */
     @Transactional
     public Optional<Task> assignTask(String taskId, String currentUsername,
@@ -292,22 +393,114 @@ public class TaskManager {
 
         String effectiveAssigneeId = (assigneeId != null && !assigneeId.isBlank())
                 ? assigneeId : null;
-        return Optional.of(persistencePort.save(existingTask.assignTo(effectiveAssigneeId)));
+        Task savedTask = persistencePort.save(existingTask.assignTo(effectiveAssigneeId));
+
+        // ═══════════════════════════════════════════════════════
+        // [Section 6] AUDIT : Assignation ou désassignation
+        // ═══════════════════════════════════════════════════════
+        // On distingue deux cas d'audit :
+        // 1. TASK_ASSIGNED : on assigne la tâche à quelqu'un
+        // 2. TASK_UNASSIGNED : on retire l'assignation (assigneeId = null)
+        if (effectiveAssigneeId != null) {
+            logActivity(taskId, ActivityLogPersistencePort.ActionType.TASK_ASSIGNED,
+                    currentUsername, "Tâche assignée à " + effectiveAssigneeId);
+        } else {
+            logActivity(taskId, ActivityLogPersistencePort.ActionType.TASK_UNASSIGNED,
+                    currentUsername, "Assignation retirée");
+        }
+
+        return Optional.of(savedTask);
     }
 
     // ═══════════════════════════════════════════════════════
     // SOFT DELETE AVEC RBAC
     // ═══════════════════════════════════════════════════════
 
+    /**
+     * Supprime logiquement une tâche.
+     *
+     * [Section 6] Audit : Loggue TASK_DELETED avant la suppression effective.
+     */
     @Transactional
     public boolean deleteTask(String taskId, String currentUsername, String currentRole) {
         if ("ADMIN".equals(currentRole)) {
             if (persistencePort.findById(taskId).isEmpty()) return false;
             persistencePort.softDelete(taskId);
+            // ═══════════════════════════════════════════════════════
+            // [Section 6] AUDIT : Suppression par ADMIN
+            // ═══════════════════════════════════════════════════════
+            logActivity(taskId, ActivityLogPersistencePort.ActionType.TASK_DELETED,
+                    currentUsername, "Tâche supprimée (ADMIN)");
             return true;
         }
         if (persistencePort.findByIdAndUserId(taskId, currentUsername).isEmpty()) return false;
         persistencePort.softDelete(taskId);
+        // ═══════════════════════════════════════════════════════
+        // [Section 6] AUDIT : Suppression par le propriétaire
+        // ═══════════════════════════════════════════════════════
+        logActivity(taskId, ActivityLogPersistencePort.ActionType.TASK_DELETED,
+                currentUsername, "Tâche supprimée par son créateur");
         return true;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // [Section 6] AUDIT TRAIL — Méthode utilitaire privée
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * LOG ACTIVITY — Section 6 : Collaboration (Audit Trail)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Fail-Safe Audit Logging
+     * ────────────────────────────────────
+     * Cette méthode est invoquée APRÈS chaque opération d'écriture réussie.
+     * Elle capture l'action dans le journal d'activité.
+     *
+     * POURQUOI UN TRY-CATCH ICI ?
+     * ──────────────────────────────
+     * L'audit est un EFFET SECONDAIRE (side effect), pas l'opération principale.
+     * Si l'audit échoue (DB indisponible, timeout, etc.) :
+     * → On loggue un WARN (pour que l'admin sache qu'il y a un problème)
+     * → On NE propage PAS l'exception
+     * → L'opération métier (création, modification, etc.) est déjà réussie
+     *
+     * SANS CE TRY-CATCH :
+     * - Si l'audit échoue → l'exception remonte dans le service
+     * - Le @Transactional détecte l'exception RuntimeException
+     * - La transaction est ROLLBACK → la tâche n'est PAS créée/modifiée
+     * - → L'audit a empêché l'opération métier ! C'est inacceptable.
+     *
+     * AVEC CE TRY-CATCH :
+     * - L'opération métier est terminée avec succès
+     * - L'audit échoue → WARN loggé, pas de propagation
+     * - → L'utilisateur voit son action réussie, l'admin voit le WARN dans les logs
+     *
+     * NOTE SUR LA TRANSACTION :
+     * ──────────────────────────
+     * L'audit est dans la MÊME transaction @Transactional que l'opération.
+     * Si l'opération échoue (avant l'audit) → la transaction est rollback →
+     * l'audit n'est jamais écrit → cohérent (pas d'audit pour une opération qui a échoué).
+     *
+     * @param taskId    L'ID de la tâche concernée
+     * @param actionType Le type d'action (TASK_CREATED, TASK_UPDATED, etc.)
+     * @param actorEmail L'email de l'utilisateur qui a fait l'action
+     * @param details    Les détails de l'action (texte libre, humainement lisible)
+     */
+    private void logActivity(String taskId, ActivityLogPersistencePort.ActionType actionType,
+                             String actorEmail, String details) {
+        try {
+            activityLogPort.save(
+                    com.tasksphere.core.domain.ActivityLog.create(
+                            taskId, actionType, actorEmail, details
+                    )
+            );
+        } catch (Exception e) {
+            // L'audit a échoué → on loggue un WARN mais on NE propage PAS l'exception.
+            // L'opération métier principale est déjà réussie à ce stade.
+            log.warn("AUDIT TRAIL : Échec de l'enregistrement de l'activité " +
+                            "[taskId={}, action={}, actor={}] — Cause : {}",
+                    taskId, actionType, actorEmail, e.getMessage());
+        }
     }
 }
