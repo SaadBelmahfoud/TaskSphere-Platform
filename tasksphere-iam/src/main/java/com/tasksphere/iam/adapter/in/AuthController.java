@@ -4,7 +4,9 @@ import com.tasksphere.iam.config.security.JwtService;
 import com.tasksphere.iam.config.security.RefreshTokenService;
 import com.tasksphere.iam.domain.RefreshTokenEntity;
 import com.tasksphere.iam.domain.UserEntity;
+import com.tasksphere.iam.dto.RegisterRequest;
 import com.tasksphere.iam.port.out.UserRepository;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -15,15 +17,24 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 
 /**
- * Contrôleur REST gérant l'authentification.
+ * ═══════════════════════════════════════════════════════════════════
+ * ADAPTATEUR D'ENTRÉE : AuthController (Authentification & Inscription)
+ * ═══════════════════════════════════════════════════════════════════
  *
- * CONCEPT - Adapter d'entrée (Driving Adapter) en architecture hexagonale :
- * ======================================================================
- * Ce contrôleur traduit les requêtes HTTP en appels au domaine.
- * Il ne contient AUCUNE logique métier, uniquement :
- * - Extraction des paramètres de la requête
- * - Appels aux services
- * - Construction de la réponse HTTP
+ * ENDPOINTS (tous publics — permitAll dans SecurityConfig) :
+ * ──────────────────────────────────────────────────────
+ * POST /api/v1/auth/login     → Connexion → JWT + Refresh Token
+ * POST /api/v1/auth/register  → Inscription → Création USER + JWT
+ * POST /api/v1/auth/refresh   → Renouvellement du JWT via Refresh Token
+ * POST /api/v1/auth/logout    → Révocation de tous les tokens
+ *
+ * INSCRIPTION OUVERTE (décision métier) :
+ * ─────────────────────────────────────────
+ * - N'importe qui peut créer un compte
+ * - Rôle par défaut : USER
+ * - Pas de vérification email (pour l'instant)
+ * - confirmPassword validé côté serveur
+ * - Email et username doivent être uniques
  */
 @Slf4j
 @RestController
@@ -37,55 +48,45 @@ public class AuthController {
     private final RefreshTokenService refreshTokenService;
 
     /**
-     * POST /api/v1/auth/login
-     * Authentifie un utilisateur et retourne les tokens.
+     * POST /api/v1/auth/login — Connexion.
      *
-     * PROCESSUS :
+     * FLUX :
      * 1. Chercher l'utilisateur par email
      * 2. Vérifier le mot de passe avec BCrypt (passwordEncoder.matches)
-     * 3. Générer un access token JWT (1h, stateless)
-     * 4. Générer un refresh token opaque (7j, stocké hashé en base)
+     * 3. Vérifier que le compte est activé
+     * 4. Générer un JWT (accessToken) + Refresh Token
+     * 5. Retourner les deux tokens
+     *
+     * SÉCURITÉ :
+     * - On ne révèle PAS si l'email existe ou pas (même message d'erreur)
+     *   → Protection contre l'énumération d'utilisateurs
+     * - Le mot de passe n'est jamais retourné au client
+     * - Le JWT expire après 1h, le refresh token après 7 jours
      */
     @PostMapping("/login")
     public ResponseEntity<Map<String, String>> login(@RequestBody Map<String, String> loginRequest) {
         String email = loginRequest.get("email");
         String rawPassword = loginRequest.get("password");
-
         log.info("Tentative de connexion pour: {}", email);
 
-        // Étape 1 : Chercher l'utilisateur par EMAIL
         Optional<UserEntity> userOpt = userRepository.findByEmail(email);
 
-        // Étape 2 : Vérifier que l'utilisateur existe ET que le mot de passe est correct
         if (userOpt.isEmpty() || !passwordEncoder.matches(rawPassword, userOpt.get().getPassword())) {
             log.warn("Échec d'authentification pour: {}", email);
-            // Message GÉNÉRIQUE pour éviter l'énumération des comptes
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", "Email ou mot de passe incorrect"));
         }
 
         UserEntity user = userOpt.get();
 
-        // Vérifier que le compte est actif
-        // NOTE : enabled est de type Boolean (wrapper), Lombok génère getEnabled()
-        // Si c'était un boolean (primitif), Lombok générerait isEnabled()
         if (!Boolean.TRUE.equals(user.getEnabled())) {
             log.warn("Compte désactivé: {}", email);
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(Map.of("error", "Compte désactivé"));
         }
 
-        // Étape 3 : Générer l'access token JWT
-        // role est un String ("USER", "MANAGER", "ADMIN"), pas un enum
-        // donc pas besoin de .name()
-        String accessToken = jwtService.generateAccessToken(
-                user.getEmail(),
-                user.getRole()
-        );
-
-        // Étape 4 : Générer le refresh token (stocké hashé en base)
+        String accessToken = jwtService.generateAccessToken(user.getEmail(), user.getRole());
         String refreshToken = refreshTokenService.createRefreshToken(user.getId());
-
         log.info("Connexion réussie pour: {}", email);
 
         return ResponseEntity.ok(Map.of(
@@ -97,26 +98,109 @@ public class AuthController {
     }
 
     /**
-     * POST /api/v1/auth/refresh
-     * Renouvelle l'access token via le refresh token avec ROTATION.
+     * POST /api/v1/auth/register — Inscription.
      *
-     * ROTATION = on révoque l'ancien token et on en crée un nouveau.
-     * Si un token volé est réutilisé après rotation, il sera rejeté.
+     * FLUX :
+     * 1. Vérifier que password === confirmPassword
+     * 2. Vérifier l'unicité de l'email et du username
+     * 3. Hacher le mot de passe avec BCrypt
+     * 4. Créer l'utilisateur avec le rôle USER par défaut
+     * 5. Générer les tokens JWT
+     * 6. Retourner les tokens + infos utilisateur
+     *
+     * @Valid : Active la validation Jakarta sur RegisterRequest :
+     * - @NotBlank sur username, firstName, lastName, email, password, confirmPassword
+     * - @Email sur email
+     * - @Size(min=3, max=50) sur username
+     * - @Size(min=6, max=100) sur password
+     *
+     * VALIDATION CONFIRM PASSWORD :
+     * La validation @NotBlank est gérée par Jakarta.
+     * La vérification password === confirmPassword est faite
+     * explicitement ici (pas de validation Jakarta standard pour ça).
+     * Le frontend utilise aussi Zod avec .refine() pour cette vérification.
+     */
+    @PostMapping("/register")
+    public ResponseEntity<Map<String, Object>> register(@Valid @RequestBody RegisterRequest request) {
+        log.info("Tentative d'inscription pour: {}", request.email());
+
+        // Vérification confirmPassword
+        if (!request.password().equals(request.confirmPassword())) {
+            log.warn("Inscription échouée: mots de passe différents pour {}", request.email());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "Les mots de passe ne correspondent pas"));
+        }
+
+        // Vérification unicité email et username
+        boolean emailExists = userRepository.existsByEmail(request.email());
+        boolean usernameExists = userRepository.existsByUsername(request.username());
+
+        if (emailExists || usernameExists) {
+            log.warn("Inscription échouée: email ou username déjà pris (email={}, username={})",
+                    request.email(), request.username());
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Map.of("error", "Un compte avec cet email ou ce nom d'utilisateur existe déjà"));
+        }
+
+        // Création de l'utilisateur avec rôle USER par défaut
+        UserEntity newUser = new UserEntity();
+        newUser.setUsername(request.username());
+        newUser.setFirstName(request.firstName());
+        newUser.setLastName(request.lastName());
+        newUser.setEmail(request.email());
+        newUser.setPassword(passwordEncoder.encode(request.password()));
+        newUser.setRole("USER");    // ← Rôle par défaut configurable
+        newUser.setEnabled(true);   // ← Compte activé immédiatement (pas de vérif email)
+
+        userRepository.save(newUser);
+        log.info("Utilisateur créé avec succès: {} (email: {}, rôle: USER)",
+                request.username(), request.email());
+
+        // Auto-login : générer les tokens directement après inscription
+        String accessToken = jwtService.generateAccessToken(newUser.getEmail(), newUser.getRole());
+        String refreshToken = refreshTokenService.createRefreshToken(newUser.getId());
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                "message", "Inscription réussie",
+                "accessToken", accessToken,
+                "refreshToken", refreshToken,
+                "tokenType", "Bearer",
+                "expiresIn", "3600",
+                "user", Map.of(
+                        "username", newUser.getUsername(),
+                        "email", newUser.getEmail(),
+                        "role", newUser.getRole()
+                )
+        ));
+    }
+
+    /**
+     * POST /api/v1/auth/refresh — Renouvellement du JWT.
+     *
+     * PATTERN : Refresh Token Rotation
+     * ──────────────────────────────────
+     * 1. Le client envoie le refresh token
+     * 2. On vérifie qu'il est valide et non expiré
+     * 3. On RÉVOQUE l'ancien refresh token (rotation)
+     * 4. On crée un NOUVEAU refresh token
+     * 5. On génère un nouveau JWT
+     * 6. On retourne les deux nouveaux tokens
+     *
+     * POURQUOI LA ROTATION ?
+     * → Si un refresh token est volé, il ne peut être utilisé qu'une fois.
+     * → Le légitime propriétaire se rendra compte que son token ne fonctionne
+     *   plus → il devra se reconnecter → l'attaquant est éjecté.
      */
     @PostMapping("/refresh")
     public ResponseEntity<Map<String, String>> refresh(@RequestBody Map<String, String> request) {
         String rawRefreshToken = request.get("refreshToken");
-
         if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(Map.of("error", "Refresh token manquant"));
         }
-
         log.info("Tentative de refresh token");
 
-        // Vérifier la validité du refresh token
         Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);
-
         if (tokenOpt.isEmpty()) {
             log.warn("Refresh token invalide ou expiré");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
@@ -126,16 +210,10 @@ public class AuthController {
         RefreshTokenEntity storedToken = tokenOpt.get();
         UserEntity user = storedToken.getUser();
 
-        // ROTATION : révoquer l'ancien token et en créer un nouveau
+        // ROTATION : révoquer l'ancien et en créer un nouveau
         refreshTokenService.revokeToken(storedToken.getId());
         String newRefreshToken = refreshTokenService.createRefreshToken(user.getId());
-
-        // Générer un nouveau access token (role est un String, pas un enum)
-        String newAccessToken = jwtService.generateAccessToken(
-                user.getEmail(),
-                user.getRole()
-        );
-
+        String newAccessToken = jwtService.generateAccessToken(user.getEmail(), user.getRole());
         log.info("Refresh token réussi pour: {}", user.getEmail());
 
         return ResponseEntity.ok(Map.of(
@@ -147,24 +225,21 @@ public class AuthController {
     }
 
     /**
-     * POST /api/v1/auth/logout
-     * Déconnecte l'utilisateur en révoquant TOUS ses refresh tokens.
-     * L'access token expirera naturellement après 1h.
+     * POST /api/v1/auth/logout — Déconnexion.
+     *
+     * Révoque TOUS les refresh tokens de l'utilisateur.
+     * Le JWT restant expirera naturellement (1h max).
      */
     @PostMapping("/logout")
     public ResponseEntity<Map<String, String>> logout(@RequestBody Map<String, String> request) {
         String rawRefreshToken = request.get("refreshToken");
-
         if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(Map.of("error", "Refresh token manquant"));
         }
-
         log.info("Tentative de déconnexion");
 
-        // Trouver le token et révoquer TOUS les tokens de l'utilisateur
         Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);
-
         if (tokenOpt.isPresent()) {
             RefreshTokenEntity storedToken = tokenOpt.get();
             refreshTokenService.revokeAllUserTokens(storedToken.getUser().getId());

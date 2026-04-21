@@ -21,20 +21,16 @@ import java.time.LocalDate;
  * - @NotBlank : ne peut pas être null ET ne peut pas être vide ("" ou "  ")
  * - @NotEmpty : ne peut pas être null ET ne peut pas être vide ("" accepte "  ")
  *
- * CHAÎNE DE VALIDATION :
- * 1. Client envoie le JSON
- * 2. Spring désérialise en TaskCreateRequest
- * 3. @Valid déclenche la validation Jakarta
- * 4. Si erreur → MethodArgumentNotValidException → 400 Bad Request
- * 5. Si OK → le contrôleur reçoit un objet valide
+ * ASSIGNATION (Option A) :
+ * Le champ assigneeId permet de créer une tâche directement assignée.
+ * - Si null ou absent du JSON → tâche non assignée (valeur par défaut)
+ * - Si renseigné → la tâche sera assignée à cet utilisateur
+ *   (le service vérifie que seul ADMIN/MANAGER peut assigner)
  *
- * PRINCIPE DU RECORD COMME DTO D'ENTRÉE :
- * Un record est parfait car le client envoie un JSON plat.
- * Spring (Jackson) mappe automatiquement les champs JSON sur les paramètres du record.
- *
- * FLOW DE VALIDATION COMPLET :
- * Client → JSON → Jackson (désérialisation) → @Valid (validation Jakarta)
- * → Controller (objet valide) → Service (logique métier) → Repository (persistance)
+ * PRINCIPE DE SÉCURITÉ JACKSON :
+ * Quand le client n'envoie pas assigneeId dans le JSON, Jackson met null.
+ * On n'a pas besoin de @JsonInclude ou de valeur par défaut — null est la bonne
+ * valeur pour signifier "pas d'assignation".
  */
 public record TaskCreateRequest(
 
@@ -46,20 +42,22 @@ public record TaskCreateRequest(
         String description,
 
         /**
-         * Priority optionnel : "LOW", "MEDIUM", "HIGH", "CRITICAL"
+         * Priority optionel : "LOW", "MEDIUM", "HIGH", "CRITICAL"
          * Si null ou vide → la valeur par défaut (MEDIUM) sera appliquée par le service.
-         *
-         * NOTE : Pas d'annotation @Pattern ici car la validation de la valeur
-         * de l'enum est faite dans le service avec Task.TaskPriority.valueOf().
-         * On aurait pu utiliser @Pattern mais le message d'erreur serait moins clair.
          */
         String priority,
 
         /**
          * Date d'échéance optionnelle.
          * Si null → pas de date d'échéance.
-         * TODO (futur) : Ajouter @FutureOrPresent pour interdire les dates passées.
          */
-        LocalDate dueDate
+        LocalDate dueDate,
+
+        /**
+         * Assignataire optionnel (Option A d'assignation).
+         * Un MANAGER ou ADMIN peut créer une tâche déjà assignée.
+         * Si null ou absent du JSON → tâche non assignée.
+         */
+        String assigneeId
 ) {
 }
