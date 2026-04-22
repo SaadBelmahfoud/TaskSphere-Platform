@@ -57,7 +57,7 @@ public class RefreshTokenEntity {
      * CascadeType.ALL + orphanRemoval = si l'utilisateur est supprimé,
      * tous ses tokens sont automatiquement supprimés aussi.
      */
-    @ManyToOne(fetch = FetchType.LAZY)
+    @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "user_id", nullable = false)
     private UserEntity user;
 

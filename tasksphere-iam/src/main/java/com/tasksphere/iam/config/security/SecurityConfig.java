@@ -1,5 +1,6 @@
 package com.tasksphere.iam.config.security;
 
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -154,6 +155,15 @@ public class SecurityConfig {
                         // ═══════════════════════════════════════════════════════
                         // Tout le reste : authentification JWT requise
                         .anyRequest().authenticated()
+                )
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint((request, response, authException) -> {
+                            response.setContentType("application/json;charset=UTF-8");
+                            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                            response.getWriter().write(
+                                    "{\"error\":\"Unauthorized\",\"message\":\"JWT token requis ou invalide\"}"
+                            );
+                        })
                 )
                 // AJOUT DU FILTRE JWT avant le filtre par défaut
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)

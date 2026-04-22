@@ -70,6 +70,7 @@ public class RefreshTokenService {
     /**
      * Vérifie la validité d'un refresh token.
      */
+    @Transactional (readOnly = true)
     public Optional<RefreshTokenEntity> verifyRefreshToken(String rawToken) {
         log.debug("Vérification du refresh token...");
 
