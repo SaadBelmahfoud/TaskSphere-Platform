@@ -69,6 +69,21 @@ public class RefreshTokenService {
 
     /**
      * Vérifie la validité d'un refresh token.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * CORRECTIF : @Transactional(readOnly = true)
+     * ═══════════════════════════════════════════════════════════════════
+     * POURQUOI readOnly ?
+     * → Cette méthode ne fait QUE des lectures (SELECT)
+     * → Elle ne modifie aucune donnée en base
+     * → readOnly permet à Hibernate d'optimiser :
+     *   - Pas de dirty checking (pas de snapshot à comparer)
+     *   - Connexion en lecture seule (pas de verrouillage)
+     *
+     * ATTENTION : Avec open-in-view: false, la session est fermée au retour.
+     * Le @ManyToOne(fetch = EAGER) sur RefreshTokenEntity.user garantit
+     * que l'utilisateur est chargé AVANT la fermeture de la session.
+     * ═══════════════════════════════════════════════════════════════════
      */
     @Transactional (readOnly = true)
     public Optional<RefreshTokenEntity> verifyRefreshToken(String rawToken) {

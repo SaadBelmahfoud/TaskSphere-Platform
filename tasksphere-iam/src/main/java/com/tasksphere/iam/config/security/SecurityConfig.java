@@ -80,7 +80,7 @@ import java.util.List;
  * Tous ces endpoints sont couverts par `.anyRequest().authenticated()`.
  * AUCUNE nouvelle règle n'est nécessaire pour les endpoints métiers.
  *
- * Seuls les endpoints ADMIN utilisent @PreAuthorize("hasRole('ADMIN')'")
+ * Seuls les endpoints ADMIN utilisent @PreAuthorize("hasRole('ADMIN')")
  * directement sur les méthodes du contrôleur (AdminController).
  * C'est une double protection : URL filter chain + annotation méthode.
  *
@@ -156,6 +156,21 @@ public class SecurityConfig {
                         // Tout le reste : authentification JWT requise
                         .anyRequest().authenticated()
                 )
+                // ═══════════════════════════════════════════════════════
+                // CORRECTIF CRITIQUE : AuthenticationEntryPoint personnalisé
+                // ═══════════════════════════════════════════════════════
+                //
+                // PROBLÈME SANS CETTE LIGNE :
+                // Spring Security 6.x retourne 403 (Forbidden) par défaut
+                // quand un utilisateur non-authentifié accède à /api/v1/tasks.
+                // Le frontend intercepteur ne déclenche le refresh QUE sur 401.
+                // → Le 403 est traité comme une erreur métier → pas de refresh
+                // → L'utilisateur reste bloqué avec une erreur 403
+                //
+                // AVEC CETTE LIGNE :
+                // Spring Security retourne 401 Unauthorized avec un body JSON.
+                // Le frontend intercepteur capte le 401 → refresh token → retry.
+                // ═══════════════════════════════════════════════════════
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, authException) -> {
                             response.setContentType("application/json;charset=UTF-8");
