@@ -76,6 +76,7 @@ public record ActivityLog(
         TASK_UPDATED,            // Tâche modifiée (titre, description, priorité, dueDate)
         TASK_STATUS_CHANGED,     // Changement de statut (TODO → DOING → DONE)
         TASK_ASSIGNED,           // Tâche assignée à un utilisateur
+        TASK_UNASSIGNED,         // Assignation retirée
         TASK_DELETED,            // Tâche supprimée (soft delete)
 
         // Actions liées aux commentaires

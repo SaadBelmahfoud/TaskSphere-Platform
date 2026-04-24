@@ -27,6 +27,8 @@ public record TaskUpdateRequest(
 
         String priority,   // "LOW", "MEDIUM", "HIGH", "CRITICAL"
 
-        LocalDate dueDate  // Date d'échéance (doit être dans le futur si fournie)
+        LocalDate dueDate,  // Date d'échéance (doit être dans le futur si fournie)
+
+        String assigneeId
 ) {
 }

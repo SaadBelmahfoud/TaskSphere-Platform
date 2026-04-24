@@ -182,15 +182,18 @@ public class TaskController {
                 .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
     }
 
-    /**
-     * PUT /api/v1/tasks/{id} — Modifier une tâche.
-     *
-     * RBAC : ADMIN peut modifier n'importe quelle tâche.
-     * USER ne peut modifier que ses propres tâches.
-     */
+    // CORRECTION B8 : Ajout de @Valid sur la mise à jour
+    // ────────────────────────────────────────────────
+    // AVANT : @RequestBody TaskUpdateRequest request
+    //   → Aucune validation ! Un titre de 1 ou 1000+ caractères passe.
+    //   → Risk de données incohérentes en base
+    //
+    // APRÈS : @Valid @RequestBody TaskUpdateRequest request
+    //   → Les annotations @Size, @NotBlank du DTO sont vérifiées
+    //   → Si validation échoue → 400 Bad Request automatique
     @PutMapping("/{id}")
     public ResponseEntity<?> updateTask(@PathVariable String id,
-                                        @RequestBody TaskUpdateRequest request,
+                                        @Valid @RequestBody TaskUpdateRequest request,  // ← CORRECTION B8
                                         Authentication authentication) {
         String username = authentication.getName();
         String role = extractRole(authentication);

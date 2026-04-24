@@ -134,34 +134,68 @@ public class TaskManager {
         return createTask(title, description, currentUsername, null, null, null);
     }
 
+    // ═══════════════════════════════════════════════════════
+    // CRÉATION DE TÂCHE — CORRECTIONS B1, B9, B10
+    // ═══════════════════════════════════════════════════════
+
     /**
      * Crée une tâche avec tous les paramètres optionnels.
      *
-     * FLUX :
-     * 1. Récupérer les infos utilisateur (email, rôle)
-     * 2. Créer le Task via factory method
-     * 3. Appliquer les modifications optionnelles (priority, dueDate, assigneeId)
-     * 4. Sauvegarder via le port de persistance
-     * 5. Publier un événement TaskCreatedEvent
-     * 6. [Section 6] Logger l'activité TASK_CREATED
+     * CORRECTIONS APPORTÉES :
+     * ──────────────────────
+     * B1 : valueOf() maintenant protégé par toUpperCase() + try-catch
+     *      → Plus de crash si le frontend envoie "high" au lieu de "HIGH"
+     *
+     * B9 : Vérification RBAC avant d'assigner (ADMIN/MANAGER seulement)
+     *      → Un USER ne peut plus créer une tâche déjà assignée
+     *
+     * B10 : getUserInfo() retiré (était appelé mais jamais utilisé)
+     *       → Suppression de l'appel DB inutile
      */
     @Transactional
     public Task createTask(String title, String description, String currentUsername,
                            String priority, LocalDate dueDate, String assigneeId) {
         log.info("SERVICE : Création de la tâche '{}' par {}", title, currentUsername);
 
-        var userInfo = userInformationPort.getUserInfo(currentUsername);
-
         Task taskToSave = Task.create(title, description != null ? description : "", currentUsername);
 
+        // CORRECTION B1 : valueOf() protégé par toUpperCase() + try-catch
+        // ──────────────────────────────────────────────────────────────
+        // AVANT : Task.TaskPriority.valueOf(priority) → crash si "high"
+        // APRÈS : valueOf(priority.toUpperCase()) + catch → null si invalide
+        // Le comportement est maintenant cohérent avec parsePriority() du contrôleur
         if (priority != null && !priority.isBlank()) {
-            taskToSave = taskToSave.updatePriority(Task.TaskPriority.valueOf(priority));
+            try {
+                taskToSave = taskToSave.updatePriority(
+                        Task.TaskPriority.valueOf(priority.toUpperCase()));  // ← CORRECTION B1
+            } catch (IllegalArgumentException e) {
+                log.warn("SERVICE : Priorité invalide '{}' ignorée, utilisation de MEDIUM", priority);
+                // La priorité par défaut (MEDIUM) est conservée
+            }
         }
         if (dueDate != null) {
             taskToSave = taskToSave.updateDueDate(dueDate);
         }
+
+        // CORRECTION B9 : Vérification RBAC pour l'assignation à la création
+        // ──────────────────────────────────────────────────────────────
+        // AVANT : Aucune vérification → n'importe quel USER pouvait assigner
+        // APRÈS : Seuls ADMIN et MANAGER peuvent assigner à la création
+        // Le TaskController vérifie déjà le rôle, mais le service doit aussi
+        // être protégé (principe de défense en profondeur)
         if (assigneeId != null && !assigneeId.isBlank()) {
-            taskToSave = taskToSave.assignTo(assigneeId);
+            var userInfo = userInformationPort.getUserInfo(currentUsername);
+            String userRole = userInfo.userRole();
+            // Retirer le préfixe "ROLE_" si présent (Spring Security convention)
+            String cleanRole = userRole.startsWith("ROLE_")
+                    ? userRole.substring(5) : userRole;
+            if (!"ADMIN".equals(cleanRole) && !"MANAGER".equals(cleanRole)) {
+                log.warn("RBAC : User {} (rôle: {}) a tenté d'assigner une tâche sans permission",
+                        currentUsername, cleanRole);
+                // On ignore l'assignation au lieu de crasher — la tâche est créée sans assignation
+            } else {
+                taskToSave = taskToSave.assignTo(assigneeId);
+            }
         }
 
         Task savedTask = persistencePort.save(taskToSave);
@@ -359,7 +393,7 @@ public class TaskManager {
                     currentUsername, "Tâche assignée à " + effectiveAssigneeId,
                     taskId, savedTask.title());
         } else {
-            logActivity(ActivityLog.Action.TASK_DELETED,
+            logActivity(ActivityLog.Action.TASK_UNASSIGNED,
                     currentUsername, "Assignation retirée",
                     taskId, savedTask.title());
         }

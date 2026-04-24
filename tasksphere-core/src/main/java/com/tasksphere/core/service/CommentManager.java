@@ -107,19 +107,21 @@ public class CommentManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // MISE À JOUR (PROPRIÉTAIRE UNIQUEMENT)
+    // MISE À JOUR — CORRECTION B4 : Vérification de propriété
     // ═══════════════════════════════════════════════════════
 
     /**
      * Met à jour le contenu d'un commentaire.
      *
      * RBAC : Seul le PROPRIÉTAIRE (username === auteur) peut modifier.
-     * Le contrôleur fait cette vérification AVANT d'appeler ce service.
      *
-     * @param commentId L'ID du commentaire
-     * @param newContent Le nouveau contenu
-     * @param currentUsername L'email de l'utilisateur qui demande la modification
-     * @return Optional avec le commentaire modifié, ou empty si non trouvé
+     * CORRECTION B4 : Ajout de la vérification de propriété
+     * ──────────────────────────────────────────────────────
+     * AVANT : Aucune vérification → n'importe quel utilisateur
+     *   pouvait modifier n'importe quel commentaire
+     *
+     * APRÈS : Vérification que currentUsername === comment.username()
+     *   → Si pas le propriétaire → Optional.empty() (404 au contrôleur)
      */
     @Transactional
     public Optional<Comment> updateComment(String commentId, String newContent, String currentUsername) {
@@ -128,10 +130,19 @@ public class CommentManager {
         Optional<Comment> existing = commentPersistencePort.findById(commentId);
         if (existing.isEmpty()) return Optional.empty();
 
+        // CORRECTION B4 : Vérification de propriété
+        // ────────────────────────────────────────
+        // On compare l'email de l'utilisateur courant avec celui de l'auteur
+        // du commentaire. Si ce n'est pas le même → accès refusé.
+        if (!existing.get().username().equals(currentUsername)) {
+            log.warn("RBAC : User {} a tenté de modifier le commentaire {} appartenant à {}",
+                    currentUsername, commentId, existing.get().username());
+            return Optional.empty();  // Retourne "non trouvé" pour ne pas divulguer l'existence
+        }
+
         Comment updated = existing.get().updateContent(newContent);
         Comment saved = commentPersistencePort.save(updated);
 
-        // Log l'action
         activityLogService.log(
                 ActivityLog.Action.COMMENT_UPDATED,
                 "Commentaire modifié",
@@ -142,19 +153,21 @@ public class CommentManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // SUPPRESSION (PROPRIÉTAIRE OU ADMIN)
+    // SUPPRESSION — CORRECTION B5 : Vérification propriétaire/admin
     // ═══════════════════════════════════════════════════════
 
     /**
      * Supprime un commentaire.
      *
      * RBAC : Le propriétaire ou un ADMIN peuvent supprimer.
-     * Le contrôleur fait cette vérification AVANT d'appeler ce service.
      *
-     * @param commentId L'ID du commentaire à supprimer
-     * @param currentUsername L'email de l'utilisateur qui demande la suppression
-     * @param currentRole Le rôle de l'utilisateur (pour vérifier ADMIN)
-     * @return true si supprimé, false si non trouvé
+     * CORRECTION B5 : Ajout de la vérification de propriété/admin
+     * ────────────────────────────────────────────────────────────
+     * AVANT : Aucune vérification → n'importe quel utilisateur
+     *   pouvait supprimer n'importe quel commentaire
+     *
+     * APRÈS : Vérification que currentUsername === comment.username()
+     *   OU que currentRole === "ADMIN"
      */
     @Transactional
     public boolean deleteComment(String commentId, String currentUsername, String currentRole) {
@@ -164,15 +177,26 @@ public class CommentManager {
         Optional<Comment> existing = commentPersistencePort.findById(commentId);
         if (existing.isEmpty()) return false;
 
-        // Log AVANT la suppression (pour garder le taskId dans le log)
         Comment toDelete = existing.get();
+
+        // CORRECTION B5 : Vérification de propriété ou rôle ADMIN
+        // ──────────────────────────────────────────────────────────
+        boolean isOwner = toDelete.username().equals(currentUsername);
+        boolean isAdmin = "ADMIN".equals(currentRole);
+
+        if (!isOwner && !isAdmin) {
+            log.warn("RBAC : User {} (rôle: {}) a tenté de supprimer le commentaire {} appartenant à {}",
+                    currentUsername, currentRole, commentId, toDelete.username());
+            return false;  // Accès refusé
+        }
+
+        // Log AVANT la suppression (pour garder le taskId dans le log)
         activityLogService.log(
                 ActivityLog.Action.COMMENT_DELETED,
                 "Commentaire supprimé",
                 currentUsername, toDelete.taskId(), null
         );
 
-        // Suppression physique (pas de soft delete pour les commentaires)
         commentPersistencePort.deleteById(commentId);
         return true;
     }
