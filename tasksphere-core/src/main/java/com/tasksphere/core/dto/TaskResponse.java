@@ -1,4 +1,6 @@
-package com.tasksphere.core.domain;
+package com.tasksphere.core.dto;
+
+import com.tasksphere.core.domain.Task;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -12,6 +14,24 @@ import java.time.LocalDateTime;
  * On ne renvoie JAMAIS l'entité JPA directement au client.
  * Le DTO contrôle exactement quels champs sont visibles.
  *
+ * CORRECTION PACKAGE :
+ * ──────────────────────
+ * Ce fichier se trouve dans le répertoire dto/, il DOIT donc déclarer
+ * package com.tasksphere.core.dto (et non com.tasksphere.core.domain).
+ *
+ * AVANT : package com.tasksphere.core.domain
+ *   → Mismatch entre le répertoire physique (dto/) et la déclaration de package
+ *   → Erreur "bad source file" : Java ne peut pas résoudre la classe
+ *   → Erreur "duplicate class" : le compilateur voit 2 classes TaskResponse
+ *     dans le package domain (celle-ci + une implicite)
+ *   → CASCADE : Toutes les références à TaskResponse dans TaskController échouent
+ *   → CASCADE : Lombok @Slf4j n'est pas traité → 60+ erreurs "cannot find symbol: log"
+ *
+ * APRÈS : package com.tasksphere.core.dto
+ *   → Le package correspond au répertoire → compilation OK
+ *   → TaskController importe com.tasksphere.core.dto.TaskResponse → résolution OK
+ *   → Lombok @Slf4j est traité → les variables log sont générées → plus d'erreurs
+ *
  * CORRECTION B3 : createdAt n'est plus null dans fromDomain()
  * ────────────────────────────────────────────────────────
  * AVANT : createdAt était toujours null dans les réponses GET
@@ -23,6 +43,15 @@ import java.time.LocalDateTime;
  *   → Le domaine Task a maintenant un champ createdAt
  *   → fromDomain() utilise task.createdAt() au lieu de null
  *   → Le frontend reçoit la vraie date de création
+ *
+ * PRINCIPE D'IMPORT DU DOMAINE :
+ * ──────────────────────────────
+ * Ce DTO importe com.tasksphere.core.domain.Task pour convertir
+ * un objet domaine en DTO de sortie via les méthodes fromDomain().
+ * C'est une dépendance UNIDIRECTIONNELLE acceptable :
+ * - Le DTO (couche de présentation) connaît le domaine
+ * - Le domaine ne connaît PAS les DTOs
+ * → Le flux de dépendance va du haut vers le bas, pas l'inverse.
  */
 public record TaskResponse(
         String id,

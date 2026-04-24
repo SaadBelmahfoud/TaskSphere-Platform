@@ -37,6 +37,20 @@ import java.util.Optional;
  * Le contrôleur ne connaît ni la base de données, ni Hibernate.
  * Il ne travaille qu'avec des DTOs (entrées) et des TaskResponse (sorties).
  *
+ * PRINCIPE DE MAPPING CENTRALISÉ (CORRECTION) :
+ * ────────────────────────────────────────────────
+ * AVANT : Le contrôleur construisait manuellement TaskResponse :
+ *   new TaskResponse(id, title, desc, status, priority, dueDate,
+ *                    completedAt, null, userId, assigneeId)
+ *   → createdAt TOUJOURS null dans GET /tasks (liste)
+ *   → createdAt = LocalDateTime.now() dans POST /tasks (création)
+ *   → Incohérence entre endpoints
+ *
+ * APRÈS : Utilisation systématique de TaskResponse.fromDomain(task)
+ *   → createdAt est TOUJOURS la vraie date de création
+ *   → Un seul endroit à maintenir (DRY)
+ *   → Cohérence garantie entre tous les endpoints
+ *
  * ENDPOINTS :
  * ──────────
  * POST   /api/v1/tasks            → Créer une tâche
@@ -46,21 +60,6 @@ import java.util.Optional;
  * PATCH  /api/v1/tasks/{id}/status → Changer le statut
  * PATCH  /api/v1/tasks/{id}/assign → Assigner une tâche (MANAGER/ADMIN)
  * DELETE /api/v1/tasks/{id}       → Supprimer (soft delete, RBAC)
- *
- * FILTRES DE RECHERCHE (GET /tasks) :
- * ─────────────────────────────────
- * ?keyword=titre           → Recherche textuelle
- * ?status=TODO             → Filtrer par statut
- * ?priority=HIGH           → Filtrer par priorité
- * ?dueDateFrom=2025-01-01  → Date d'échéance minimum
- * ?dueDateTo=2025-12-31    → Date d'échéance maximum
- * ?createdFrom=2025-01-01T00:00:00 → Date de création min
- * ?createdTo=2025-12-31T23:59:59   → Date de création max
- * ?assigneeId=email@x.com  → Filtrer par assignataire
- * ?sortBy=createdAt        → Champ de tri
- * ?sortDir=desc            → Direction de tri (asc/desc)
- * ?page=0                  → Page (0-indexed)
- * ?size=20                 → Taille de page
  */
 @Slf4j
 @RestController
@@ -92,12 +91,19 @@ public class TaskController {
                 request.priority(), request.dueDate(), request.assigneeId()
         );
 
-        TaskResponse response = new TaskResponse(
-                created.id(), created.title(), created.description(),
-                created.status().name(), created.priority().name(),
-                created.dueDate(), created.completedAt(), LocalDateTime.now(),
-                created.userId(), created.assigneeId()
-        );
+        // CORRECTION : Utilisation de TaskResponse.fromDomain() au lieu de
+        // la construction manuelle "new TaskResponse(...)".
+        // ──────────────────────────────────────────────────────
+        // AVANT : new TaskResponse(..., LocalDateTime.now(), ...)
+        //   → createdAt = LocalDateTime.now() au lieu de la vraie date de création
+        //   → La date de création était écrasée par "maintenant"
+        //   → Si la tâche a été créée à T1 et la réponse construite à T2,
+        //     createdAt serait T2 (faux !)
+        //
+        // APRÈS : TaskResponse.fromDomain(created)
+        //   → Utilise task.createdAt() qui est la VRAIE date de création
+        //   → Cohérent avec toutes les autres méthodes (getTaskById, etc.)
+        TaskResponse response = TaskResponse.fromDomain(created);
 
         return ResponseEntity.created(URI.create("/api/v1/tasks/" + response.id())).body(response);
     }
@@ -146,12 +152,19 @@ public class TaskController {
         Page<Task> taskPage = taskManager.searchTasks(
                 criteria, page, size, sortBy, sortDir, username, role);
 
+        // CORRECTION : Utilisation de TaskResponse.fromDomain() au lieu de
+        // la construction manuelle "new TaskResponse(..., null, ...)".
+        // ──────────────────────────────────────────────────────
+        // AVANT : new TaskResponse(id, title, desc, status, priority,
+        //                          dueDate, completedAt, null, userId, assigneeId)
+        //   → createdAt TOUJOURS null dans la liste !
+        //   → Le dashboard "Créées cette semaine" ne pouvait pas filtrer
+        //   → Le frontend ne pouvait pas afficher la date de création
+        //
+        // APRÈS : TaskResponse.fromDomain(task)
+        //   → createdAt est la VRAIE date de création de chaque tâche
         var content = taskPage.getContent().stream()
-                .map(task -> new TaskResponse(
-                        task.id(), task.title(), task.description(),
-                        task.status().name(), task.priority().name(),
-                        task.dueDate(), task.completedAt(), null,
-                        task.userId(), task.assigneeId()))
+                .map(task -> TaskResponse.fromDomain(task))  // ← CORRECTION : Utilise fromDomain() qui préserve createdAt
                 .toList();
 
         return ResponseEntity.ok(Map.of(

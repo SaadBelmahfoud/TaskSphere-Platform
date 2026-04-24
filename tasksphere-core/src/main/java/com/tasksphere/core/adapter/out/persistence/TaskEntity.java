@@ -154,6 +154,24 @@ public class TaskEntity implements Persistable<String> {
      * Pour les mises à jour (UPDATE), le TaskPersistenceAdapter
      * utilise le chemin dual : récupérer l'entité existante
      * et modifier via setters (dirty checking).
+     *
+     * CORRECTION : Préservation de createdAt depuis le domaine
+     * ────────────────────────────────────────────────────────
+     * AVANT : this.createdAt = LocalDateTime.now();
+     *   → La date de création du domaine était PERDUE
+     *   → Si le domaine avait un createdAt précis (ex: chargé depuis la BDD),
+     *     elle était écrasée par "maintenant"
+     *   → Pour les nouvelles tâches, Task.create() met déjà createdAt = now(),
+     *     donc écraser ne changeait rien. Mais c'était une mauvaise pratique
+     *     qui masquait un bug potentiel.
+     *
+     * APRÈS : this.createdAt = task.createdAt() != null ? task.createdAt() : LocalDateTime.now();
+     *   → On préserve la date de création du domaine si elle existe
+     *   → Fallback à LocalDateTime.now() si null (ne devrait pas arriver)
+     *   → Cohérent avec le principe immutabilité du record Task
+     *
+     * NOTE : updatedAt est toujours mis à now() car toute sauvegarde
+     * est considérée comme une modification (INSERT ou UPDATE).
      */
     public TaskEntity(Task task) {
         this.id = task.id();
@@ -166,7 +184,7 @@ public class TaskEntity implements Persistable<String> {
         this.deletedAt = task.deletedAt();
         this.userId = task.userId();
         this.assigneeId = task.assigneeId();
-        this.createdAt = LocalDateTime.now();
+        this.createdAt = task.createdAt() != null ? task.createdAt() : LocalDateTime.now();  // ← CORRECTION : Préservé depuis le domaine
         this.updatedAt = LocalDateTime.now();
         this.isNew = true;  // ← Indique à JPA de faire un INSERT
     }
