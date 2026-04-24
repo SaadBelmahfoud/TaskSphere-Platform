@@ -66,6 +66,57 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
 
     /**
      * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Recherche par ID + propriétaire OU assignataire
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME AVANT :
+     * findByIdAndDeletedAtIsNullAndUserId() ne cherche QUE le propriétaire.
+     * Un utilisateur qui est assignataire (mais pas créateur) reçoit un 404.
+     *
+     * SOLUTION :
+     * Utiliser (t.userId = :username OR t.assigneeId = :username) pour
+     * permettre à la fois au créateur ET à l'assignataire d'accéder à la tâche.
+     *
+     * PRINCIPE JPQL — OR dans les conditions :
+     * WHERE id = :id AND deletedAt IS NULL
+     *   AND (userId = :username OR assigneeId = :username)
+     * → La tâche est trouvée si l'utilisateur est créateur OU assignataire.
+     *
+     * UTILISÉE PAR : TaskManager.getTaskById() pour USER
+     */
+    @Query("SELECT t FROM TaskEntity t " +
+            "WHERE t.id = :id AND t.deletedAt IS NULL " +
+            "AND (t.userId = :username OR t.assigneeId = :username)")
+    Optional<TaskEntity> findByIdAndUserIsOwnerOrAssignee(
+            @Param("id") String id,
+            @Param("username") String username);
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME AVANT :
+     * findByUserIdAndDeletedAtIsNullOrderByCreatedAtDesc() ne cherche QUE
+     * les tâches dont l'utilisateur est propriétaire. Les tâches assignées
+     * à cet utilisateur n'apparaissent PAS dans sa liste.
+     *
+     * SOLUTION :
+     * Utiliser (t.userId = :username OR t.assigneeId = :username) pour
+     * retourner les tâches où l'utilisateur est créateur OU assignataire.
+     *
+     * PRINCIPE — OR logique dans la clause WHERE :
+     * Si l'utilisateur a créé la tâche → userId match → trouvé
+     * Si l'utilisateur est assignataire → assigneeId match → trouvé
+     * Si aucun des deux → pas trouvé
+     *
+     * UTILISÉE PAR : TaskManager.getMyTasks(), TaskPersistenceAdapter
+     */
+    Page<TaskEntity> findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc(
+            String userId, String assigneeId, Pageable pageable);
+
+    /**
+     * ═══════════════════════════════════════════════════════════
      * RECHERCHE DYNAMIQUE AVEC FILTRES OPTIONNELS
      * ═══════════════════════════════════════════════════════════
      *
@@ -114,6 +165,72 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
             @Param("keyword") String keyword,
             @Param("userId") String userId,
             @Param("assigneeId") String assigneeId,
+            @Param("status") TaskStatus status,
+            @Param("priority") TaskPriority priority,
+            @Param("dueDateFrom") LocalDate dueDateFrom,
+            @Param("dueDateTo") LocalDate dueDateTo,
+            @Param("createdFrom") LocalDateTime createdFrom,
+            @Param("createdTo") LocalDateTime createdTo,
+            Pageable pageable
+    );
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Recherche dynamique pour USER (propriétaire OU assignataire)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME AVANT :
+     * La méthode searchTasks() standard filtre par userId ET assigneeId
+     * séparément (AND logique). Pour un USER, le TaskManager faisait
+     * DEUX requêtes séparées (owned + assigned) puis fusionnait les
+     * résultats. Cette approche est FONDAMENTALEMENT CASSÉE car :
+     *
+     * 1. PAGINATION INCORRECTE : Chaque requête retourne SA propre page.
+     *    Fusionner 2 pages ne produit PAS une pagination correcte.
+     *    Exemple : ownedTasks = page 0 (5 éléments), assignedTasks = page 0 (3 éléments)
+     *    → mergedContent = 8 éléments (ou moins si doublons)
+     *    → Mais totalElements = Math.max(5, 3) = 5 (FAUX !)
+     *
+     * 2. DOUBLONS POSSIBLES : Si l'utilisateur est à la fois créateur
+     *    et assignataire de la même tâche, elle apparaît dans les DEUX
+     *    requêtes. Le .distinct() fonctionne CAR Task est un record
+     *    (equals() compare tous les champs), mais ça ajoute de la
+     *    complexité et des performances dégradées.
+     *
+     * 3. PERFORMANCE : 2 requêtes SQL au lieu d'1 seule.
+     *
+     * SOLUTION — UNE SEULE REQUÊTE avec OR dans la clause WHERE :
+     * AND (t.userId = :username OR t.assigneeId = :username)
+     *
+     * Cette requête remplace les DEUX requêtes précédentes.
+     * Le moteur SQL (H2 ou PostgreSQL) optimise cette clause OR
+     * en un seul scan d'index, ce qui est plus efficace que 2 requêtes.
+     *
+     * PRINCIPE JPQL — OR dans les filtres dynamiques :
+     * La condition (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)
+     * combine le RBAC-aware pattern avec le OR pour l'ownership/assignation.
+     *
+     * POURQUOI PAS DE userId ET assigneeId SÉPARÉS ?
+     * → On utilise un seul paramètre "username" car pour un USER,
+     *   on veut les tâches où il est IMPLIQUÉ (créateur OU assignataire).
+     * → Les filtres additionnels (keyword, status, priority, etc.) restent
+     *   identiques à searchTasks().
+     *
+     * UTILISÉE PAR : TaskManager.searchTasks() pour USER
+     */
+    @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
+            "AND (t.userId = :username OR t.assigneeId = :username) " +
+            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
+            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
+            "AND (:status IS NULL OR t.status = :status) " +
+            "AND (:priority IS NULL OR t.priority = :priority) " +
+            "AND (:dueDateFrom IS NULL OR t.dueDate >= :dueDateFrom) " +
+            "AND (:dueDateTo IS NULL OR t.dueDate <= :dueDateTo) " +
+            "AND (:createdFrom IS NULL OR t.createdAt >= :createdFrom) " +
+            "AND (:createdTo IS NULL OR t.createdAt <= :createdTo)")
+    Page<TaskEntity> searchTasksForUser(
+            @Param("username") String username,
+            @Param("keyword") String keyword,
             @Param("status") TaskStatus status,
             @Param("priority") TaskPriority priority,
             @Param("dueDateFrom") LocalDate dueDateFrom,

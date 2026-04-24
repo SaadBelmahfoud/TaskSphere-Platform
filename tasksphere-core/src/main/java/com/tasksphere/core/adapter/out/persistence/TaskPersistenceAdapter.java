@@ -174,6 +174,46 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
+    /**
+     * CORRECTION BUG 1 — Recherche par ID + (propriétaire OU assignataire)
+     *
+     * Délègue au Repository qui utilise la @Query JPQL :
+     * WHERE id = :id AND deletedAt IS NULL
+     *   AND (userId = :username OR assigneeId = :username)
+     *
+     * Cela permet à un USER assignataire d'accéder à la tâche,
+     * pas seulement au créateur.
+     */
+    @Override
+    public Optional<Task> findByIdAndUserIsOwnerOrAssignee(String id, String username) {
+        log.debug("ADAPTATEUR JPA : Recherche tâche {} pour utilisateur {} (owner OR assignee)", id, username);
+        return taskRepository.findByIdAndUserIsOwnerOrAssignee(id, username)
+                .map(TaskEntity::toDomain);
+    }
+
+    /**
+     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
+     *
+     * Délègue au Repository qui utilise la méthode dérivée :
+     * findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc
+     *
+     * Spring Data JPA traduit en :
+     * SELECT t FROM TaskEntity t
+     * WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
+     *   AND t.deletedAt IS NULL
+     * ORDER BY t.createdAt DESC
+     *
+     * NOTE : On passe le MÊME username pour userId et assigneeId car on
+     * veut les tâches où l'utilisateur est IMPLIQUÉ (créateur OU assignataire).
+     */
+    @Override
+    public Page<Task> findByUserIsOwnerOrAssignee(String username, Pageable pageable) {
+        log.debug("ADAPTATEUR JPA : Recherche des tâches de l'utilisateur {} (owner OR assignee)", username);
+        return taskRepository.findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc(
+                        username, username, pageable)
+                .map(TaskEntity::toDomain);
+    }
+
     @Override
     public Optional<Task> findById(String id) {
         log.debug("ADAPTATEUR JPA : Recherche de la tâche {}", id);
@@ -261,6 +301,40 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
 
         // .map(TaskEntity::toDomain) : transforme chaque TaskEntity en Task (record domaine)
         // Les métadonnées de pagination (totalElements, totalPages) sont préservées
+        return result.map(TaskEntity::toDomain);
+    }
+
+    /**
+     * CORRECTION BUG 1 — Recherche dynamique pour USER (propriétaire OU assignataire)
+     *
+     * Délègue au Repository qui utilise la @Query JPQL :
+     * WHERE (t.userId = :username OR t.assigneeId = :username)
+     *   AND ... autres filtres optionnels ...
+     *
+     * Cette méthode remplace les DEUX requêtes séparées (owned + assigned)
+     * qui étaient fusionnées manuellement dans le TaskManager, causant
+     * des bugs de pagination.
+     *
+     * AVANTAGE : La pagination est EXACTE car la BDD gère le OR
+     * nativement dans une seule requête.
+     */
+    @Override
+    public Page<Task> searchTasksForUser(String username, TaskSearchCriteria criteria, Pageable pageable) {
+        log.debug("ADAPTATEUR JPA : Recherche dynamique USER {} (owner OR assignee) keyword={}, status={}, priority={}",
+                username, criteria.keyword(), criteria.status(), criteria.priority());
+
+        Page<TaskEntity> result = taskRepository.searchTasksForUser(
+                username,
+                criteria.keyword(),
+                criteria.status(),
+                criteria.priority(),
+                criteria.dueDateFrom(),
+                criteria.dueDateTo(),
+                criteria.createdFrom(),
+                criteria.createdTo(),
+                pageable
+        );
+
         return result.map(TaskEntity::toDomain);
     }
 

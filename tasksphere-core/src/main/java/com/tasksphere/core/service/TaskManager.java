@@ -9,7 +9,6 @@ import com.tasksphere.core.port.out.UserInformationPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -18,7 +17,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.Optional;
-import java.util.stream.Stream;
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -226,7 +224,16 @@ public class TaskManager {
     @Transactional(readOnly = true)
     public Page<Task> getMyTasks(String currentUsername, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return persistencePort.findByUserId(currentUsername, pageable);
+        // CORRECTION BUG 1 : Utiliser findByUserIsOwnerOrAssignee au lieu de findByUserId
+        // ──────────────────────────────────────────────────────────────────────────────
+        // AVANT : persistencePort.findByUserId(currentUsername, pageable)
+        //   → Ne retournait QUE les tâches créées par l'utilisateur
+        //   → Les tâches assignées à l'utilisateur n'apparaissaient PAS
+        //
+        // APRÈS : persistencePort.findByUserIsOwnerOrAssignee(currentUsername, pageable)
+        //   → Retourne les tâches créées PAR l'utilisateur ET les tâches assignées À l'utilisateur
+        //   → Un USER voit maintenant toutes les tâches auxquelles il est impliqué
+        return persistencePort.findByUserIsOwnerOrAssignee(currentUsername, pageable);
     }
 
     /**
@@ -239,10 +246,40 @@ public class TaskManager {
      *
      * ADMIN ou MANAGER :
      * → Recherche GLOBALE (voient toutes les tâches de tous les utilisateurs)
+     * → Utilise searchTasks() standard (sans filtre user)
      *
      * USER :
      * → Recherche LIMITÉE aux tâches créées + assignées
-     * → Les résultats sont MERGÉS et dédupliqués
+     * → CORRECTION BUG 1 : Utilise searchTasksForUser() (UNE SEULE requête)
+     *   au lieu de l'ancienne approche cassée qui faisait DEUX requêtes
+     *   et fusionnait les résultats manuellement.
+     *
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Passage de 2 requêtes à 1 seule requête
+     * ═══════════════════════════════════════════════════════════
+     *
+     * AVANT (APPROCHE CASSÉE) :
+     * ────────────────────────
+     * Pour un USER, on faisait :
+     * 1. searchTasks(ownedCriteria)    → Page<Task> ownedTasks
+     * 2. searchTasks(assignedCriteria) → Page<Task> assignedTasks
+     * 3. Stream.concat(owned, assigned).distinct().toList()
+     * 4. totalElements = Math.max(owned.total, assigned.total) → FAUX !
+     *
+     * PROBLÈMES :
+     * - totalElements incorrect → pagination cassée
+     * - Fusion de 2 pages ≠ 1 page correcte
+     * - Doublons possibles (gérés par .distinct() mais coûteux)
+     * - 2 requêtes SQL au lieu d'1
+     *
+     * APRÈS (APPROCHE CORRIGÉE) :
+     * ──────────────────────────
+     * Pour un USER, on fait :
+     * 1. searchTasksForUser(username, criteria, pageable)
+     *    → UNE SEULE requête SQL avec (userId = :username OR assigneeId = :username)
+     *    → Pagination EXACTE
+     *    → Pas de doublons
+     *    → 1 seule requête SQL
      */
     @Transactional(readOnly = true)
     public Page<Task> searchTasks(TaskPersistencePort.TaskSearchCriteria criteria,
@@ -254,34 +291,13 @@ public class TaskManager {
         Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortField));
 
         if ("ADMIN".equals(currentRole) || "MANAGER".equals(currentRole)) {
+            // ADMIN/MANAGER : Recherche globale (pas de filtre utilisateur)
             return persistencePort.searchTasks(criteria, pageable);
         } else {
-            TaskPersistencePort.TaskSearchCriteria ownedCriteria =
-                    new TaskPersistencePort.TaskSearchCriteria(
-                            criteria.keyword(), currentUsername, null,
-                            criteria.status(), criteria.priority(),
-                            criteria.dueDateFrom(), criteria.dueDateTo(),
-                            criteria.createdFrom(), criteria.createdTo()
-                    );
-            Page<Task> ownedTasks = persistencePort.searchTasks(ownedCriteria, pageable);
-
-            TaskPersistencePort.TaskSearchCriteria assignedCriteria =
-                    new TaskPersistencePort.TaskSearchCriteria(
-                            criteria.keyword(), null, currentUsername,
-                            criteria.status(), criteria.priority(),
-                            criteria.dueDateFrom(), criteria.dueDateTo(),
-                            criteria.createdFrom(), criteria.createdTo()
-                    );
-            Page<Task> assignedTasks = persistencePort.searchTasks(assignedCriteria, pageable);
-
-            var mergedContent = Stream.concat(
-                            ownedTasks.getContent().stream(),
-                            assignedTasks.getContent().stream())
-                    .distinct().toList();
-
-            long totalElements = Math.max(ownedTasks.getTotalElements(),
-                    assignedTasks.getTotalElements());
-            return new PageImpl<>(mergedContent, pageable, totalElements);
+            // USER : Recherche limitée aux tâches où l'utilisateur est impliqué
+            // CORRECTION BUG 1 : Utilise searchTasksForUser() (1 seule requête)
+            // au lieu de l'ancienne approche cassée (2 requêtes + fusion manuelle)
+            return persistencePort.searchTasksForUser(currentUsername, criteria, pageable);
         }
     }
 
@@ -294,7 +310,16 @@ public class TaskManager {
         if ("ADMIN".equals(currentRole) || "MANAGER".equals(currentRole)) {
             return persistencePort.findById(taskId);
         }
-        return persistencePort.findByIdAndUserId(taskId, currentUsername);
+        // CORRECTION BUG 1 : Utiliser findByIdAndUserIsOwnerOrAssignee au lieu de findByIdAndUserId
+        // ────────────────────────────────────────────────────────────────────────────────────────
+        // AVANT : persistencePort.findByIdAndUserId(taskId, currentUsername)
+        //   → Un USER qui est ASSIGNATAIRE (mais pas créateur) recevait un 404
+        //   → La tâche existait en BDD mais n'était pas accessible à l'assignataire
+        //
+        // APRÈS : persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername)
+        //   → Un USER peut voir la tâche s'il est créateur (userId) OU assignataire (assigneeId)
+        //   → Cela permet à un utilisateur assigné de voir le détail de la tâche
+        return persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -307,8 +332,18 @@ public class TaskManager {
         Task existingTask;
         if ("ADMIN".equals(currentRole)) {
             existingTask = persistencePort.findById(taskId).orElse(null);
+        } else if ("MANAGER".equals(currentRole)) {
+            // CORRECTION BUG 1 : MANAGER peut modifier toutes les tâches
+            existingTask = persistencePort.findById(taskId).orElse(null);
         } else {
-            existingTask = persistencePort.findByIdAndUserId(taskId, currentUsername).orElse(null);
+            // CORRECTION BUG 1 : USER peut modifier ses tâches créées ET les tâches assignées
+            // ──────────────────────────────────────────────────────────────────────────
+            // AVANT : persistencePort.findByIdAndUserId(taskId, currentUsername)
+            //   → Un USER qui est ASSIGNATAIRE ne pouvait pas modifier la tâche
+            //
+            // APRÈS : persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername)
+            //   → Un USER peut modifier la tâche s'il est créateur OU assignataire
+            existingTask = persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername).orElse(null);
         }
         if (existingTask == null) return Optional.empty();
 

@@ -55,6 +55,55 @@ public interface TaskPersistencePort {
      */
     Optional<Task> findByIdAndUserId(String id, String userId);
 
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Recherche par ID + (propriétaire OU assignataire)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME AVANT :
+     * findByIdAndUserId() ne cherche QUE le propriétaire (userId).
+     * Un utilisateur qui est assignataire (mais pas créateur) reçoit un 404
+     * quand il tente de voir le détail d'une tâche qui lui est assignée.
+     *
+     * SOLUTION :
+     * Chercher la tâche si l'utilisateur est créateur (userId) OU
+     * assignataire (assigneeId). Cela permet à un USER de voir les
+     * tâches qu'il a créées ET celles qu'on lui a assignées.
+     *
+     * PRINCIPE RBAC ÉLARGI :
+     * ┌──────────────────────────────────────────────────────────┐
+     * │  AVANT : USER ne voit que ses tâches CRÉÉES              │
+     * │  APRÈS : USER voit ses tâches CRÉÉES + ASSIGNÉES         │
+     * └──────────────────────────────────────────────────────────┘
+     *
+     * @param id       L'ID de la tâche
+     * @param username L'email de l'utilisateur (créateur ou assignataire)
+     * @return La tâche si trouvée et l'utilisateur est impliqué
+     */
+    Optional<Task> findByIdAndUserIsOwnerOrAssignee(String id, String username);
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME AVANT :
+     * findByUserId() ne retourne que les tâches dont l'utilisateur
+     * est le propriétaire (userId). Les tâches assignées à cet
+     * utilisateur (assigneeId) n'apparaissent PAS dans sa liste.
+     *
+     * SOLUTION :
+     * Retourner les tâches où l'utilisateur est créateur (userId)
+     * OU assignataire (assigneeId), avec pagination.
+     *
+     * UTILISÉE PAR : TaskManager.getMyTasks()
+     *
+     * @param username L'email de l'utilisateur
+     * @param pageable La pagination
+     * @return Une page de tâches où l'utilisateur est impliqué
+     */
+    Page<Task> findByUserIsOwnerOrAssignee(String username, Pageable pageable);
+
     /** Supprimer logiquement une tâche (soft delete : set deletedAt = now) */
     void softDelete(String id);
 
@@ -81,6 +130,50 @@ public interface TaskPersistencePort {
      * @return Une page de tâches correspondant aux critères
      */
     Page<Task> searchTasks(TaskSearchCriteria criteria, Pageable pageable);
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG 1 — Recherche dynamique pour USER (propriétaire OU assignataire)
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME AVANT :
+     * searchTasks() utilise userId ET assigneeId comme filtres AND.
+     * Pour un USER, le TaskManager faisait DEUX requêtes séparées
+     * (owned + assigned) puis fusionnait les résultats. Cette approche
+     * est CASSÉE pour la pagination :
+     * - totalElements est incorrect (Math.max au lieu du vrai count)
+     * - La fusion de 2 pages ne produit PAS une pagination valide
+     *
+     * SOLUTION :
+     * UNE SEULE requête qui utilise (userId = :username OR assigneeId = :username)
+     * dans la clause WHERE. La BDD gère le OR nativement, la pagination
+     * est correcte, et il n'y a PAS de doublons.
+     *
+     * PRINCIPE — OR logique dans une seule requête vs fusion de 2 requêtes :
+     * ┌──────────────────────────────────────────────────────────────────┐
+     * │  AVANT (2 requêtes) :                                            │
+     * │  1. SELECT ... WHERE userId = :user → Page A (5 items, total=5) │
+     * │  2. SELECT ... WHERE assigneeId = :user → Page B (3 items, total=3) │
+     * │  3. Fusion : Stream.concat(A, B).distinct() = 6 items           │
+     * │  4. totalElements = Math.max(5, 3) = 5 → FAUX ! (devrait être 6)│
+     * │  5. Pagination cassée : page 2 peut être vide ou incomplète      │
+     * │                                                                  │
+     * │  APRÈS (1 requête) :                                             │
+     * │  1. SELECT ... WHERE (userId = :user OR assigneeId = :user)      │
+     * │     AND ... autres filtres ...                                   │
+     * │  2. Page complète avec totalElements EXACT                       │
+     * │  3. Pagination correcte : page 0, 1, 2... fonctionnent           │
+     * └──────────────────────────────────────────────────────────────────┘
+     *
+     * UTILISÉE PAR : TaskManager.searchTasks() pour USER uniquement.
+     * Pour ADMIN/MANAGER, on utilise searchTasks() standard (sans filtre user).
+     *
+     * @param username L'email de l'utilisateur (toujours non-null pour USER)
+     * @param criteria Les critères de recherche (keyword, status, priority, etc.)
+     * @param pageable La pagination
+     * @return Une page de tâches où l'utilisateur est impliqué
+     */
+    Page<Task> searchTasksForUser(String username, TaskSearchCriteria criteria, Pageable pageable);
 
     // ═══════════════════════════════════════════════════════
     // PARAMETER OBJECT : TaskSearchCriteria
