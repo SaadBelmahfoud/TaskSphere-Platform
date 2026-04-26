@@ -3,7 +3,6 @@ package com.tasksphere.core.service;
 import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.dto.UserInfo;
-import com.tasksphere.core.port.out.ActivityLogService;
 import com.tasksphere.core.port.out.EventPublisherPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
@@ -11,7 +10,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -32,16 +30,39 @@ import static org.mockito.Mockito.*;
  * TESTS UNITAIRES : TaskManager (Service métier — CORRIGÉ & ENRICHI)
  * ═══════════════════════════════════════════════════════════════════
  *
- * CORRECTIONS APPORTÉES :
- * ──────────────────────
- * 1. Toutes les signatures de méthode mises à jour pour correspondre
+ * CORRECTIONS APPORTÉES (v2) :
+ * ─────────────────────────────
+ * 1. Suppression des stubbings inutiles de userInformationPort.getUserInfo()
+ *    dans les tests où assigneeId est null (UnnecessaryStubbingException)
+ *
+ *    EXPLICATION THÉORIQUE :
+ *    ───────────────────────
+ *    Mockito en mode STRICT (par défaut avec MockitoExtension) détecte
+ *    les stubbings qui ne sont jamais "consommés" (la méthode stubbée
+ *    n'est jamais appelée). C'est un code smell : cela indique soit :
+ *    - Un test mal écrit (on stubbe une dépendance non utilisée)
+ *    - Un changement dans le code de production qui rend le stubbing obsolète
+ *    - Une mécompréhension du flux d'exécution
+ *
+ *    Dans notre cas, c'était la 3e option : le test stubbait
+ *    userInformationPort.getUserInfo() parce qu'il pensait que
+ *    createTask() l'appelait TOUJOURS. Mais en réalité, cette méthode
+ *    n'est appelée QUE pour vérifier le RBAC lors d'une assignation.
+ *
+ *    RÈGLE PRATIQUE :
+ *    ─────────────────
+ *    Ne stubber QUE les méthodes qui seront effectivement appelées
+ *    par le code testé. Si un stubbing n'est pas consommé, c'est
+ *    probablement une erreur de compréhension du flux.
+ *
+ * 2. Toutes les signatures de méthode mises à jour pour correspondre
  *    au code actuel (3+ paramètres avec rôle RBAC)
- * 2. Ajout du mock ActivityLogService (était manquant)
- * 3. Tests pour assignTask() — RBAC MANAGER/ADMIN/USER
- * 4. Tests pour searchTasks() — RBAC ADMIN vs USER
- * 5. Tests pour getTaskById() — propriétaire vs assigné vs ADMIN
- * 6. Tests pour updateTask() — avec rôle
- * 7. Tests pour deleteTask() — ADMIN vs propriétaire vs non-propriétaire
+ * 3. Ajout du mock ActivityLogService (était manquant)
+ * 4. Tests pour assignTask() — RBAC MANAGER/ADMIN/USER
+ * 5. Tests pour searchTasks() — RBAC ADMIN vs USER
+ * 6. Tests pour getTaskById() — propriétaire vs assigné vs ADMIN
+ * 7. Tests pour updateTask() — avec rôle
+ * 8. Tests pour deleteTask() — ADMIN vs propriétaire vs non-propriétaire
  *
  * PRINCIPE DE MOCKITO :
  * ─────────────────────
@@ -88,12 +109,12 @@ class TaskManagerTest {
         @DisplayName("Devrait sauvegarder la tâche et publier un événement")
         void shouldSaveAndPublishEvent() {
             // ARRANGE : préparer le comportement des mocks
-            when(userInformationPort.getUserInfo("saadoune@tasksphere.com"))
-                    .thenReturn(new UserInfo("saadoune", "ROLE_USER"));
+            // NOTE : userInformationPort.getUserInfo() N'est PAS stubbé car
+            // assigneeId est null dans l'appel 3 params → getUserInfo jamais appelé
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
-            // ACT : appeler la méthode à tester (version 3 params)
+            // ACT : appeler la méthode à tester (version 3 params → assigneeId = null)
             Task result = taskManager.createTask("Ma tâche", "Description", "saadoune@tasksphere.com");
 
             // ASSERT : vérifier les résultats
@@ -112,13 +133,14 @@ class TaskManagerTest {
             verify(activityLogService, times(1)).log(
                     eq(ActivityLog.Action.TASK_CREATED), anyString(),
                     eq("saadoune@tasksphere.com"), anyString(), anyString());
+            // Vérifier que getUserInfo n'a PAS été appelé (pas d'assignation)
+            verify(userInformationPort, never()).getUserInfo(anyString());
         }
 
         @Test
         @DisplayName("Avec description null devrait utiliser une chaîne vide")
         void withNullDescription_shouldUseEmptyString() {
-            when(userInformationPort.getUserInfo("saadoune@tasksphere.com"))
-                    .thenReturn(new UserInfo("saadoune", "ROLE_USER"));
+            // NOTE : pas de stubbing de getUserInfo car assigneeId = null
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -130,6 +152,7 @@ class TaskManagerTest {
         @Test
         @DisplayName("Version 6 params avec priorité HIGH et dueDate")
         void withFullParams_shouldSetAllFields() {
+            // ICI on stub getUserInfo car assigneeId est non-null → RBAC vérifié
             when(userInformationPort.getUserInfo("manager@tasksphere.com"))
                     .thenReturn(new UserInfo("manager", "ROLE_MANAGER"));
             when(persistencePort.save(any(Task.class)))
@@ -147,11 +170,10 @@ class TaskManagerTest {
         }
 
         @Test
-        @DisplayName("Priorité invalide ('high' minuscule) devrait être ignorée → MEDIUM")
-        void withInvalidPriority_shouldFallbackToMedium() {
-            // CORRECTION B1 : valueOf() protégé par toUpperCase() + try-catch
-            when(userInformationPort.getUserInfo("user@test.com"))
-                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+        @DisplayName("Priorité 'high' minuscule est normalisée en HIGH par toUpperCase()")
+        void withLowercasePriority_shouldBeNormalizedToUppercase() {
+            // CORRECTION B1 : "high".toUpperCase() = "HIGH" → valeur valide → acceptée
+            // NOTE : pas de stubbing de getUserInfo car assigneeId = null
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -165,8 +187,7 @@ class TaskManagerTest {
         @Test
         @DisplayName("Priorité totalement invalide ('URGENT') devrait tomber à MEDIUM")
         void withNonExistentPriority_shouldFallbackToMedium() {
-            when(userInformationPort.getUserInfo("user@test.com"))
-                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+            // NOTE : pas de stubbing de getUserInfo car assigneeId = null
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -181,6 +202,7 @@ class TaskManagerTest {
         @DisplayName("USER qui tente d'assigner → assignation ignorée (B9)")
         void userTryingToAssign_shouldIgnoreAssignment() {
             // CORRECTION B9 : Défense en profondeur
+            // ICI on stub getUserInfo car assigneeId est non-null → RBAC vérifié
             when(userInformationPort.getUserInfo("user@test.com"))
                     .thenReturn(new UserInfo("user", "ROLE_USER"));
             when(persistencePort.save(any(Task.class)))
@@ -246,7 +268,6 @@ class TaskManagerTest {
         @Test
         @DisplayName("USER assigné → peut voir la tâche (BUG 1 CORRIGÉ)")
         void assigneeUser_shouldSeeTask() {
-            // CORRECTION BUG 1 : Un utilisateur assigné peut maintenant voir la tâche
             Task task = Task.createWithAssignee("Tâche assignée", "Desc", "owner@test.com", "assignee@test.com");
             when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-1", "assignee@test.com"))
                     .thenReturn(Optional.of(task));
@@ -601,8 +622,7 @@ class TaskManagerTest {
         @DisplayName("Si l'audit échoue, l'opération métier réussit quand même")
         void auditFailure_shouldNotBlockBusinessOperation() {
             // ARRANGE : l'audit lève une exception
-            when(userInformationPort.getUserInfo("user@test.com"))
-                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+            // NOTE : pas de stubbing de getUserInfo car assigneeId = null (3 params)
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
             doThrow(new RuntimeException("DB audit indisponible"))
