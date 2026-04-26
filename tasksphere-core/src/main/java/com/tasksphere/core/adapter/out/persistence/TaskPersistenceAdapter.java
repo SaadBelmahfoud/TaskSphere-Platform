@@ -8,6 +8,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /*
@@ -171,6 +174,46 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
+    /**
+     * CORRECTION BUG 1 — Recherche par ID + (propriétaire OU assignataire)
+     *
+     * Délègue au Repository qui utilise la @Query JPQL :
+     * WHERE id = :id AND deletedAt IS NULL
+     *   AND (userId = :username OR assigneeId = :username)
+     *
+     * Cela permet à un USER assignataire d'accéder à la tâche,
+     * pas seulement au créateur.
+     */
+    @Override
+    public Optional<Task> findByIdAndUserIsOwnerOrAssignee(String id, String username) {
+        log.debug("ADAPTATEUR JPA : Recherche tâche {} pour utilisateur {} (owner OR assignee)", id, username);
+        return taskRepository.findByIdAndUserIsOwnerOrAssignee(id, username)
+                .map(TaskEntity::toDomain);
+    }
+
+    /**
+     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
+     *
+     * Délègue au Repository qui utilise la méthode dérivée :
+     * findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc
+     *
+     * Spring Data JPA traduit en :
+     * SELECT t FROM TaskEntity t
+     * WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
+     *   AND t.deletedAt IS NULL
+     * ORDER BY t.createdAt DESC
+     *
+     * NOTE : On passe le MÊME username pour userId et assigneeId car on
+     * veut les tâches où l'utilisateur est IMPLIQUÉ (créateur OU assignataire).
+     */
+    @Override
+    public Page<Task> findByUserIsOwnerOrAssignee(String username, Pageable pageable) {
+        log.debug("ADAPTATEUR JPA : Recherche des tâches de l'utilisateur {} (owner OR assignee)", username);
+        return taskRepository.findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc(
+                        username, username, pageable)
+                .map(TaskEntity::toDomain);
+    }
+
     @Override
     public Optional<Task> findById(String id) {
         log.debug("ADAPTATEUR JPA : Recherche de la tâche {}", id);
@@ -259,5 +302,287 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         // .map(TaskEntity::toDomain) : transforme chaque TaskEntity en Task (record domaine)
         // Les métadonnées de pagination (totalElements, totalPages) sont préservées
         return result.map(TaskEntity::toDomain);
+    }
+
+    /**
+     * CORRECTION BUG 1 — Recherche dynamique pour USER (propriétaire OU assignataire)
+     *
+     * Délègue au Repository qui utilise la @Query JPQL :
+     * WHERE (t.userId = :username OR t.assigneeId = :username)
+     *   AND ... autres filtres optionnels ...
+     *
+     * Cette méthode remplace les DEUX requêtes séparées (owned + assigned)
+     * qui étaient fusionnées manuellement dans le TaskManager, causant
+     * des bugs de pagination.
+     *
+     * AVANTAGE : La pagination est EXACTE car la BDD gère le OR
+     * nativement dans une seule requête.
+     */
+    @Override
+    public Page<Task> searchTasksForUser(String username, TaskSearchCriteria criteria, Pageable pageable) {
+        log.debug("ADAPTATEUR JPA : Recherche dynamique USER {} (owner OR assignee) keyword={}, status={}, priority={}",
+                username, criteria.keyword(), criteria.status(), criteria.priority());
+
+        Page<TaskEntity> result = taskRepository.searchTasksForUser(
+                username,
+                criteria.keyword(),
+                criteria.status(),
+                criteria.priority(),
+                criteria.dueDateFrom(),
+                criteria.dueDateTo(),
+                criteria.createdFrom(),
+                criteria.createdTo(),
+                pageable
+        );
+
+        return result.map(TaskEntity::toDomain);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES DE COMPTAGE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * COMPTAGE POUR DASHBOARD — Section 6 : Collaboration
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : L'adaptateur traduit les méthodes de comptage du port
+     * en appels au Repository JPA.
+     *
+     * AVANTAGE vs itération en mémoire :
+     * - countAll() → 1 requête COUNT(*) au lieu de SELECT * + .size()
+     * - countByStatus() → 1 COUNT avec WHERE au lieu de filtre Java
+     * - countByPriority() → 1 GROUP BY au lieu de 4 boucles
+     *
+     * POURQUOI PAS DE CONVERSION ENTITY → DOMAIN ?
+     * → Les méthodes de comptage retournent des primitives (long)
+     *   ou des Map<String, Long>. Il n'y a PAS de mapping Entity ↔ Domain
+     *   à faire. C'est un avantage des COUNT : on ne charge aucune entité.
+     *
+     * PERFORMANCE :
+     * ┌─────────────────────────────────────────────────────────────┐
+     * │  SANS count (itération) :                                   │
+     * │  SELECT * FROM tasks WHERE deleted_at IS NULL               │
+     * │  → Charge N entités complètes en mémoire                     │
+     * │  → Pour 10 000 tâches : ~10 MB en mémoire JVM               │
+     * │                                                              │
+     * │  AVEC count (méthodes dédiées) :                            │
+     * │  SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL         │
+     * │  → Retourne un seul long (8 octets)                          │
+     * │  → Pour 10 000 tâches : 8 octets en mémoire JVM             │
+     * └─────────────────────────────────────────────────────────────┘
+     */
+
+    @Override
+    public long countAll() {
+        log.debug("ADAPTATEUR JPA : Comptage de toutes les tâches actives");
+        return taskRepository.countByDeletedAtIsNull();
+    }
+
+    @Override
+    public long countByStatus(Task.TaskStatus status) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches avec statut {}", status);
+        return taskRepository.countByStatusAndDeletedAtIsNull(status);
+    }
+
+    @Override
+    public Map<String, Long> countByPriority() {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches par priorité");
+
+        /**
+         * ═══════════════════════════════════════════════════════════
+         * TRANSFORMATION Object[] → Map<String, Long>
+         * ═══════════════════════════════════════════════════════════
+         *
+         * Le @Query GROUP BY retourne une List<Object[]> :
+         * - row[0] = TaskPriority (enum) ex: HIGH
+         * - row[1] = Long (count) ex: 3
+         *
+         * On transforme en Map<String, Long> :
+         * { "HIGH": 3, "MEDIUM": 12, "LOW": 5, "CRITICAL": 1 }
+         *
+         * POURQUOI UN LinkedHashMap ?
+         * → Préserve l'ordre d'insertion (contrairement à HashMap)
+         * → L'ordre des priorités sera celui retourné par la BDD
+         *   (généralement l'ordre de déclaration de l'enum en JPQL)
+         *
+         * NOTE : Si une priorité n'a aucune tâche, elle n'apparaîtra
+         * PAS dans le résultat GROUP BY. Le DashboardService doit
+         * gérer les clés manquantes (afficher 0 par défaut).
+         */
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Object[] row : taskRepository.countGroupByPriority()) {
+            Task.TaskPriority priority = (Task.TaskPriority) row[0];
+            Long count = (Long) row[1];
+            result.put(priority.name(), count);
+        }
+        return result;
+    }
+
+    @Override
+    public long countOverdue() {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches en retard");
+        return taskRepository.countOverdue();
+    }
+
+    @Override
+    public long countByUserId(String userId) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches de l'utilisateur {}", userId);
+        return taskRepository.countByUserIdAndDeletedAtIsNull(userId);
+    }
+
+    @Override
+    public long countByAssigneeId(String assigneeId) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches assignées à {}", assigneeId);
+        return taskRepository.countByAssigneeIdAndDeletedAtIsNull(assigneeId);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES RBAC-AWARE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * IMPLÉMENTATION RBAC-AWARE — Comptage avec filtre utilisateur
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : Ces méthodes implémentent les 6 nouvelles signatures
+     * du port TaskPersistencePort. Elles délèguent au Repository JPA
+     * qui exécute les @Query avec le pattern ":username IS NULL OR".
+     *
+     * FLUX COMPLET :
+     * DashboardController.getDashboardStats()
+     *   → taskPersistencePort.countActiveTasks(username)       [port — interface]
+     *     → TaskPersistenceAdapter.countActiveTasks(username)   [CETTE CLASSE]
+     *       → taskRepository.countActiveTasks(username)         [Spring Data JPA]
+     *         → @Query SQL avec filtre optionnel                [BDD]
+     *
+     * RÔLE DE L'ADAPTATEUR ICI :
+     * ──────────────────────────
+     * L'adaptateur fait principalement de la "pass-through" (transfert direct)
+     * car les @Query JPA retournent déjà le bon type (long ou List<Object[]>).
+     *
+     * Cependant, pour les méthodes GROUP BY (countByStatus, countByPriority),
+     * l'adaptateur transforme la List<Object[]> en Map<String, Long>.
+     * C'est une LOGIQUE D'ADAPTATION légitime :
+     * - Le Repository retourne des projections brutes (Object[])
+     * - Le Port définit le contrat métier (Map<String, Long>)
+     * - L'adaptateur fait la traduction
+     */
+
+    /**
+     * Compte les tâches actives avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre.
+     *
+     * @param username null = vue globale (ADMIN/MANAGER), email = filtre USER
+     * @return Nombre de tâches actives (filtrées ou non)
+     */
+    @Override
+    public long countActiveTasks(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage des tâches actives (RBAC username={})",
+                username != null ? username : "GLOBAL");
+        return taskRepository.countActiveTasks(username);
+    }
+
+    /**
+     * Compte les tâches actives par statut avec filtre RBAC optionnel.
+     *
+     * TRANSFORMATION Object[] → Map<String, Long> :
+     * ──────────────────────────────────────────
+     * Le Repository retourne List<Object[]> depuis le GROUP BY.
+     * Chaque Object[] = [TaskStatus enum, Long count].
+     * L'adaptateur transforme en Map<String, Long> pour le contrat du port.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @return Map { "TODO": N, "DOING": N, "DONE": N }
+     */
+    @Override
+    public Map<String, Long> countByStatus(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage par statut (RBAC username={})",
+                username != null ? username : "GLOBAL");
+
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Object[] row : taskRepository.countGroupByStatus(username)) {
+            Task.TaskStatus status = (Task.TaskStatus) row[0];
+            Long count = (Long) row[1];
+            result.put(status.name(), count);
+        }
+        return result;
+    }
+
+    /**
+     * Compte les tâches actives par priorité avec filtre RBAC optionnel.
+     *
+     * TRANSFORMATION Object[] → Map<String, Long> :
+     * Même pattern que countByStatus(String) mais pour les priorités.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @return Map { "LOW": N, "MEDIUM": N, "HIGH": N, "CRITICAL": N }
+     */
+    @Override
+    public Map<String, Long> countByPriority(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage par priorité (RBAC username={})",
+                username != null ? username : "GLOBAL");
+
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (Object[] row : taskRepository.countGroupByPriorityFiltered(username)) {
+            Task.TaskPriority priority = (Task.TaskPriority) row[0];
+            Long count = (Long) row[1];
+            result.put(priority.name(), count);
+        }
+        return result;
+    }
+
+    /**
+     * Compte les tâches actives créées après une date avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre date + RBAC.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @param after    Date de référence (créées après cette date)
+     * @return Nombre de tâches créées après la date
+     */
+    @Override
+    public long countCreatedAfter(String username, LocalDateTime after) {
+        log.debug("ADAPTATEUR JPA : Comptage tâches créées après {} (RBAC username={})",
+                after, username != null ? username : "GLOBAL");
+        return taskRepository.countCreatedAfter(username, after);
+    }
+
+    /**
+     * Compte les tâches actives complétées après une date avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre date + RBAC.
+     *
+     * NOTE : completedAt est non-null uniquement pour les tâches DONE.
+     * Cette méthode ne compte donc que les tâches terminées.
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @param after    Date de référence (complétées après cette date)
+     * @return Nombre de tâches complétées après la date
+     */
+    @Override
+    public long countCompletedAfter(String username, LocalDateTime after) {
+        log.debug("ADAPTATEUR JPA : Comptage tâches complétées après {} (RBAC username={})",
+                after, username != null ? username : "GLOBAL");
+        return taskRepository.countCompletedAfter(username, after);
+    }
+
+    /**
+     * Compte les tâches en retard avec filtre RBAC optionnel.
+     *
+     * Délègue directement au Repository : la @Query gère le filtre RBAC
+     * + les conditions "en retard" (dueDate < now ET status ≠ DONE).
+     *
+     * @param username null = vue globale, email = filtre USER
+     * @return Nombre de tâches en retard (filtrées ou non)
+     */
+    @Override
+    public long countOverdueTasks(String username) {
+        log.debug("ADAPTATEUR JPA : Comptage tâches en retard (RBAC username={})",
+                username != null ? username : "GLOBAL");
+        return taskRepository.countOverdueTasks(username);
     }
 }

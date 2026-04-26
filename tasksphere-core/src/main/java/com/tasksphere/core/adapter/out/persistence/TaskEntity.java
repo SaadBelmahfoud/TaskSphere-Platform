@@ -92,8 +92,19 @@ public class TaskEntity implements Persistable<String> {
      * userId = l'email du créateur de la tâche.
      * C'est le champ de "propriété" utilisé pour le RBAC :
      * un USER ne peut voir/modifier que ses propres tâches (userId = son email).
+     *
+     * CORRECTION B2 : length = 36 → 255
+     * ──────────────────────────────────────
+     * AVANT : @Column(nullable = false, length = 36)
+     *   → Conçu pour un UUID (36 chars), mais on stocke un EMAIL !
+     *   → Un email > 36 chars → DataTruncation → INSERT échoue
+     *   → La tâche n'est JAMAIS créée en BDD
+     *
+     * APRÈS : @Column(nullable = false, length = 255)
+     *   → Couvre la RFC 5321 (email max 254 chars)
+     *   → Tous les emails valides passent sans problème
      */
-    @Column(nullable = false, length = 36)
+    @Column(nullable = false, length = 255)   // ← CORRECTION B2
     private String userId;
 
     /**
@@ -102,11 +113,9 @@ public class TaskEntity implements Persistable<String> {
      * - null = tâche non assignée
      * - "email@x.com" = tâche assignée à cet utilisateur
      *
-     * Permissions :
-     * - Seuls ADMIN et MANAGER peuvent modifier ce champ (via /assign)
-     * - L'assignataire peut changer le statut de la tâche
+     * CORRECTION B2 : Même raison que userId
      */
-    @Column(length = 36)
+    @Column(length = 255)                     // ← CORRECTION B2
     private String assigneeId;
 
     /**
@@ -145,6 +154,24 @@ public class TaskEntity implements Persistable<String> {
      * Pour les mises à jour (UPDATE), le TaskPersistenceAdapter
      * utilise le chemin dual : récupérer l'entité existante
      * et modifier via setters (dirty checking).
+     *
+     * CORRECTION : Préservation de createdAt depuis le domaine
+     * ────────────────────────────────────────────────────────
+     * AVANT : this.createdAt = LocalDateTime.now();
+     *   → La date de création du domaine était PERDUE
+     *   → Si le domaine avait un createdAt précis (ex: chargé depuis la BDD),
+     *     elle était écrasée par "maintenant"
+     *   → Pour les nouvelles tâches, Task.create() met déjà createdAt = now(),
+     *     donc écraser ne changeait rien. Mais c'était une mauvaise pratique
+     *     qui masquait un bug potentiel.
+     *
+     * APRÈS : this.createdAt = task.createdAt() != null ? task.createdAt() : LocalDateTime.now();
+     *   → On préserve la date de création du domaine si elle existe
+     *   → Fallback à LocalDateTime.now() si null (ne devrait pas arriver)
+     *   → Cohérent avec le principe immutabilité du record Task
+     *
+     * NOTE : updatedAt est toujours mis à now() car toute sauvegarde
+     * est considérée comme une modification (INSERT ou UPDATE).
      */
     public TaskEntity(Task task) {
         this.id = task.id();
@@ -157,7 +184,7 @@ public class TaskEntity implements Persistable<String> {
         this.deletedAt = task.deletedAt();
         this.userId = task.userId();
         this.assigneeId = task.assigneeId();
-        this.createdAt = LocalDateTime.now();
+        this.createdAt = task.createdAt() != null ? task.createdAt() : LocalDateTime.now();  // ← CORRECTION : Préservé depuis le domaine
         this.updatedAt = LocalDateTime.now();
         this.isNew = true;  // ← Indique à JPA de faire un INSERT
     }
@@ -187,10 +214,15 @@ public class TaskEntity implements Persistable<String> {
     /**
      * Convertit l'entité JPA en objet du domaine (Task record).
      * C'est la méthode de mappage Entity → Domain.
+     *
+     * CORRECTION B3 : On préserve maintenant createdAt et updatedAt
+     * au lieu de les perdre silencieusement.
      */
     public Task toDomain() {
         return new Task(this.id, this.title, this.description, this.status, this.priority,
-                this.dueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
+                this.dueDate, this.completedAt,
+                this.createdAt, this.updatedAt,   // ← CORRECTION B3 : Préservés !
+                this.deletedAt, this.userId, this.assigneeId);
     }
 
     // ═══════════════════════════════════════════════════════

@@ -9,6 +9,7 @@ import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * S'exécute avant chaque test. On s'en sert pour récupérer un token JWT valide.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class TaskControllerIT {
 
@@ -423,5 +425,164 @@ class TaskControllerIT {
                 new HttpEntity<>(body, headers), Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // NOUVEAUX TESTS : ASSIGNATION + VISIBILITÉ PROPRIÉTAIRE+ASSIGNÉ
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    @DisplayName("PATCH /tasks/{id}/assign — MANAGER peut assigner une tâche")
+    void assignTask_manager_shouldReturn200() {
+        String taskId = createTask(managerToken, "Tâche à assigner", null, null, null);
+
+        HttpHeaders headers = authHeaders(managerToken);
+        Map<String, String> body = Map.of("assigneeId", "saadoune@tasksphere.com");
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks/" + taskId + "/assign", HttpMethod.PATCH,
+                new HttpEntity<>(body, headers), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().get("assigneeId")).isEqualTo("saadoune@tasksphere.com");
+    }
+
+    @Test
+    @DisplayName("PATCH /tasks/{id}/assign — USER ne peut PAS assigner (403)")
+    void assignTask_user_shouldReturn403() {
+        String taskId = createTask(managerToken, "Tâche non-assignable par USER", null, null, null);
+
+        HttpHeaders headers = authHeaders(userToken);
+        Map<String, String> body = Map.of("assigneeId", "admin@tasksphere.com");
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks/" + taskId + "/assign", HttpMethod.PATCH,
+                new HttpEntity<>(body, headers), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    @DisplayName("GET /tasks/{id} — Assigné peut voir la tâche (BUG 1 corrigé)")
+    void getTaskById_assignee_shouldSeeTask() {
+        // Manager crée une tâche assignée à saadoune
+        String taskId = createTask(managerToken, "Tâche assignée à saadoune",
+                null, null, "saadoune@tasksphere.com");
+
+        // saadoune (USER) doit pouvoir voir cette tâche
+        HttpHeaders userHeaders = authHeaders(userToken);
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks/" + taskId, HttpMethod.GET,
+                new HttpEntity<>(userHeaders), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().get("title")).isEqualTo("Tâche assignée à saadoune");
+    }
+
+    @Test
+    @DisplayName("PUT /tasks/{id} — Assigné peut modifier la tâche (BUG 1 corrigé)")
+    void updateTask_assignee_shouldUpdate() {
+        String taskId = createTask(managerToken, "Tâche modifiable par assigné",
+                null, null, "saadoune@tasksphere.com");
+
+        HttpHeaders userHeaders = authHeaders(userToken);
+        Map<String, Object> body = Map.of("description", "Modifiée par l'assigné");
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks/" + taskId, HttpMethod.PUT,
+                new HttpEntity<>(body, userHeaders), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    @DisplayName("PATCH /tasks/{id}/status — Assigné peut changer le statut")
+    void updateStatus_assignee_shouldChange() {
+        String taskId = createTask(managerToken, "Statut par assigné",
+                null, null, "saadoune@tasksphere.com");
+
+        HttpHeaders userHeaders = authHeaders(userToken);
+        Map<String, String> body = Map.of("status", "DOING");
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks/" + taskId + "/status", HttpMethod.PATCH,
+                new HttpEntity<>(body, userHeaders), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().get("status")).isEqualTo("DOING");
+    }
+
+    @Test
+    @DisplayName("GET /tasks — La tâche assignée apparaît dans la liste de l'assigné")
+    void getMyTasks_assignedTask_shouldAppear() {
+        // Créer une tâche assignée à saadoune
+        createTask(managerToken, "Visible pour l'assigné", null, null, "saadoune@tasksphere.com");
+
+        // Vérifier que saadoune la voit dans sa liste
+        HttpHeaders userHeaders = authHeaders(userToken);
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks?page=0&size=50", HttpMethod.GET,
+                new HttpEntity<>(userHeaders), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<?, ?> responseBody = response.getBody();
+        var content = (java.util.List<?>) responseBody.get("content");
+        boolean hasAssignedTask = content.stream()
+                .anyMatch(t -> ((Map<?, ?>) t).get("title").equals("Visible pour l'assigné"));
+        assertThat(hasAssignedTask).isTrue();
+    }
+
+    @Test
+    @DisplayName("PATCH /tasks/{id}/assign — Retirer l'assignation (unassign)")
+    void unassignTask_shouldReturn200() {
+        String taskId = createTask(managerToken, "Tâche à désassigner",
+                null, null, "saadoune@tasksphere.com");
+
+        HttpHeaders headers = authHeaders(managerToken);
+        Map<String, String> body = Map.of("assigneeId", "");
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/tasks/" + taskId + "/assign", HttpMethod.PATCH,
+                new HttpEntity<>(body, headers), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        // L'assigneeId doit être null après désassignation
+        assertThat(response.getBody().get("assigneeId")).isNull();
+    }
+
+    @Test
+    @DisplayName("GET /dashboard/stats — Retourne les statistiques pour un USER")
+    void dashboardStats_shouldReturn200() {
+        createTask(userToken, "Tâche pour dashboard", null, "HIGH", null);
+
+        HttpHeaders headers = authHeaders(userToken);
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "/api/v1/dashboard/stats", HttpMethod.GET,
+                new HttpEntity<>(headers), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().get("totalTasks")).isNotNull();
+        assertThat(response.getBody().get("tasksByStatus")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("POST /api/v1/auth/register — Inscription réussie retourne 201")
+    void register_success_shouldReturn201() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, String> body = Map.of(
+                "username", "newuser",
+                "firstName", "New",
+                "lastName", "User",
+                "email", "newuser@test.com",
+                "password", "password123",
+                "confirmPassword", "password123"
+        );
+
+        ResponseEntity<Map> response = restTemplate.postForEntity(
+                "/api/v1/auth/register", new HttpEntity<>(body, headers), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody().get("accessToken")).isNotNull();
     }
 }

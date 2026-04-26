@@ -35,6 +35,21 @@ import java.util.UUID;
  * Il ne dépend d'aucun framework (pas de JPA, pas de Spring).
  * Les adaptateurs (TaskEntity ↔ Task) font la traduction.
  *
+ * CORRECTION SPRINT 3 — Ajout de createdAt et updatedAt :
+ * ────────────────────────────────────────────────────────
+ * AVANT : Le record n'avait PAS de champs createdAt/updatedAt.
+ *   → TaskEntity.toDomain() les perdait silencieusement
+ *   → TaskResponse.fromDomain() mettait createdAt = null
+ *   → Le frontend recevait TOUJOURS createdAt: null
+ *   → Les tris par date de création ne fonctionnaient pas
+ *   → Le dashboard "Créées cette semaine" affichait 0
+ *
+ * APRÈS : Le record a createdAt et updatedAt.
+ *   → toDomain() les préserve
+ *   → fromDomain() les utilise
+ *   → Le frontend reçoit les vraies dates
+ *   → Tout fonctionne correctement
+ *
  * CYCLE DE VIE D'UNE TÂCHE :
  * ──────────────────────────
  * Création → TODO → DOING → DONE
@@ -51,6 +66,8 @@ public record Task(
         TaskPriority priority,
         LocalDate dueDate,
         LocalDateTime completedAt,
+        LocalDateTime createdAt,      // ← CORRECTION B3 : Ajouté (était manquant)
+        LocalDateTime updatedAt,      // ← CORRECTION B3 : Ajouté pour traçabilité
         LocalDateTime deletedAt,
         String userId,        // Créateur de la tâche (email)
         String assigneeId     // Personne assignée (email, optionnel)
@@ -59,10 +76,6 @@ public record Task(
     /**
      * Énumération des statuts possibles d'une tâche.
      * Le cycle de vie est : TODO → DOING → DONE
-     *
-     * NOTE : On ne valide pas les transitions ici (c'est au service
-     * métier TaskManager de le faire si nécessaire).
-     * Pour l'instant, on permet toute transition librement.
      */
     public enum TaskStatus {
         TODO,    // À faire
@@ -96,6 +109,7 @@ public record Task(
      * - Mettre le statut par défaut (TODO)
      * - Mettre la priorité par défaut (MEDIUM)
      * - Gérer la description null → ""
+     * - Initialiser createdAt et updatedAt à maintenant
      *
      * @param title       Le titre de la tâche (obligatoire)
      * @param description La description (peut être null → "")
@@ -103,6 +117,7 @@ public record Task(
      * @return Une nouvelle instance Task
      */
     public static Task create(String title, String description, String userId) {
+        LocalDateTime now = LocalDateTime.now();  // ← CORRECTION B3 : Capturer le moment de création
         return new Task(
                 UUID.randomUUID().toString(),
                 title,
@@ -111,6 +126,8 @@ public record Task(
                 TaskPriority.MEDIUM,     // Priorité par défaut
                 null,                    // Pas de date d'échéance
                 null,                    // Pas encore terminée
+                now,                     // ← CORRECTION B3 : createdAt = maintenant
+                now,                     // ← CORRECTION B3 : updatedAt = maintenant
                 null,                    // Pas supprimée
                 userId,
                 null                     // Pas assignée initialement
@@ -119,18 +136,9 @@ public record Task(
 
     /**
      * Crée une nouvelle tâche avec un assignataire direct.
-     *
-     * Option A d'assignation : l'assignataire est défini à la création.
-     * Cela permet à un MANAGER/ADMIN de créer une tâche
-     * directement assignée à un utilisateur.
-     *
-     * @param title       Le titre
-     * @param description La description
-     * @param userId      L'email du créateur
-     * @param assigneeId  L'email de la personne assignée
-     * @return Une nouvelle instance Task avec assigneeId renseigné
      */
     public static Task createWithAssignee(String title, String description, String userId, String assigneeId) {
+        LocalDateTime now = LocalDateTime.now();
         return new Task(
                 UUID.randomUUID().toString(),
                 title,
@@ -139,9 +147,11 @@ public record Task(
                 TaskPriority.MEDIUM,
                 null,
                 null,
+                now,       // ← CORRECTION B3
+                now,       // ← CORRECTION B3
                 null,
                 userId,
-                assigneeId    // ← Assignation directe à la création
+                assigneeId
         );
     }
 
@@ -155,10 +165,13 @@ public record Task(
     /**
      * Met à jour le titre et la description.
      * Retourne une NOUVELLE instance (immutabilité).
+     * ← CORRECTION B3 : updatedAt mis à jour automatiquement
      */
     public Task update(String title, String description) {
         return new Task(this.id, title, description, this.status, this.priority,
-                this.dueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
+                this.dueDate, this.completedAt, this.createdAt,
+                LocalDateTime.now(),    // ← CORRECTION B3 : updatedAt = maintenant
+                this.deletedAt, this.userId, this.assigneeId);
     }
 
     /**
@@ -171,7 +184,9 @@ public record Task(
                 ? LocalDateTime.now()
                 : null;
         return new Task(this.id, this.title, this.description, newStatus, this.priority,
-                this.dueDate, completedAt, this.deletedAt, this.userId, this.assigneeId);
+                this.dueDate, completedAt, this.createdAt,
+                LocalDateTime.now(),    // ← CORRECTION B3
+                this.deletedAt, this.userId, this.assigneeId);
     }
 
     /**
@@ -179,7 +194,9 @@ public record Task(
      */
     public Task updatePriority(TaskPriority newPriority) {
         return new Task(this.id, this.title, this.description, this.status, newPriority,
-                this.dueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
+                this.dueDate, this.completedAt, this.createdAt,
+                LocalDateTime.now(),    // ← CORRECTION B3
+                this.deletedAt, this.userId, this.assigneeId);
     }
 
     /**
@@ -187,37 +204,29 @@ public record Task(
      */
     public Task updateDueDate(LocalDate newDueDate) {
         return new Task(this.id, this.title, this.description, this.status, this.priority,
-                newDueDate, this.completedAt, this.deletedAt, this.userId, this.assigneeId);
+                newDueDate, this.completedAt, this.createdAt,
+                LocalDateTime.now(),    // ← CORRECTION B3
+                this.deletedAt, this.userId, this.assigneeId);
     }
 
     /**
      * Assigne la tâche à un utilisateur.
-     *
-     * RBAC : Cette méthode est appelée par TaskManager.assignTask()
-     * qui vérifie que seul ADMIN ou MANAGER peut assigner.
-     *
-     * @param newAssigneeId L'email de la personne à assigner
      */
     public Task assignTo(String newAssigneeId) {
         return new Task(this.id, this.title, this.description, this.status, this.priority,
-                this.dueDate, this.completedAt, this.deletedAt, this.userId, newAssigneeId);
+                this.dueDate, this.completedAt, this.createdAt,
+                LocalDateTime.now(),    // ← CORRECTION B3
+                this.deletedAt, this.userId, newAssigneeId);
     }
 
     /**
      * Soft delete : archive la tâche sans la supprimer physiquement.
-     *
-     * POURQUOI SOFT DELETE ?
-     * - Récupération possible (on peut remettre deletedAt à null)
-     * - Audit trail (on sait quand la tâche a été "supprimée")
-     * - Conformité RGPD (conservation des données)
-     * - Pas de CASCADE DELETE accidentel
-     *
-     * Conséquence technique : TOUTES les requêtes JPA doivent filtrer
-     * WHERE deletedAt IS NULL pour ne pas retourner les tâches archivées.
      */
     public Task softDelete() {
         return new Task(this.id, this.title, this.description, this.status, this.priority,
-                this.dueDate, this.completedAt, LocalDateTime.now(), this.userId, this.assigneeId);
+                this.dueDate, this.completedAt, this.createdAt,
+                LocalDateTime.now(),    // ← CORRECTION B3
+                LocalDateTime.now(), this.userId, this.assigneeId);
     }
 
     // ═══════════════════════════════════════════════════════

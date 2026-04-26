@@ -51,13 +51,33 @@ public class RefreshTokenEntity {
     /**
      * Relation vers l'utilisateur propriétaire du token.
      *
-     * FetchType.LAZY = l'utilisateur n'est chargé en mémoire que si on y accède
-     * (pas automatiquement avec le token). Optimisation mémoire.
+     * ═══════════════════════════════════════════════════════════════════
+     * CORRECTION CRITIQUE : FetchType.EAGER (pas LAZY)
+     * ═══════════════════════════════════════════════════════════════════
      *
-     * CascadeType.ALL + orphanRemoval = si l'utilisateur est supprimé,
-     * tous ses tokens sont automatiquement supprimés aussi.
+     * POURQUOI EAGER ?
+     * ─────────────────
+     * 1. open-in-view: false dans application.yaml
+     *    → La session Hibernate est fermée à la fin de chaque transaction
+     *    → L'accès à storedToken.getUser() hors transaction provoque
+     *      LazyInitializationException
+     *
+     * 2. AuthController.refresh() fait :
+     *    a) verifyRefreshToken() → @Transactional(readOnly=true) → session fermée au retour
+     *    b) storedToken.getUser() → HORS transaction → LazyInitializationException !
+     *
+     * 3. Avec EAGER, Hibernate charge l'utilisateur IMMÉDIATEMENT
+     *    lors du SELECT du refresh token → pas de lazy loading → pas d'exception
+     *
+     * COÛT NÉGLIGEABLE :
+     * - Un refresh token a exactement UN utilisateur (relation @ManyToOne)
+     * - Pas de problème N+1 (un SELECT par refresh token, pas par collection)
+     * - Le refresh endpoint n'est pas appelé souvent (seulement quand le JWT expire)
+     *
+     * CASCADE + ORPHAN REMOVAL :
+     * Si l'utilisateur est supprimé, tous ses tokens sont automatiquement supprimés.
      */
-    @ManyToOne(fetch = FetchType.LAZY)
+    @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "user_id", nullable = false)
     private UserEntity user;
 
