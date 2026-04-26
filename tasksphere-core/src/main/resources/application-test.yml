@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════════
+# PROFIL TEST — Configuration pour les tests d'intégration
+# ═══════════════════════════════════════════════════
+# Ce fichier surcharge application.yaml pour les tests.
+# H2 en mémoire est utilisé (pas de base persistante).
+# Les logs SQL sont désactivés pour alléger la sortie.
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:tasksphere-testdb;DB_CLOSE_DELAY=-1  # Base dédiée aux tests
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop    # Crée les tables au démarrage, les détruit à la fin
+    show-sql: false            # Désactive les logs SQL dans les tests
+    open-in-view: false
+
+  h2:
+    console:
+      enabled: false           # Pas besoin de console H2 dans les tests
+
+jwt:
+  secret: test-secret-key-for-integration-tests-only-256bits-minimum-length
+
+server:
+  port: 0                     # Port aléatoire libre (évite les conflits)

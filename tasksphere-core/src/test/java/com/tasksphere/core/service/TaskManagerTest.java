@@ -1,221 +1,619 @@
 package com.tasksphere.core.service;
 
+import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.dto.UserInfo;
+import com.tasksphere.core.port.out.ActivityLogService;
 import com.tasksphere.core.port.out.EventPublisherPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
 
+import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * ====================================================================
- * TESTS UNITAIRES : TaskManager (Service métier)
- * ====================================================================
+ * ═══════════════════════════════════════════════════════════════════
+ * TESTS UNITAIRES : TaskManager (Service métier — CORRIGÉ & ENRICHI)
+ * ═══════════════════════════════════════════════════════════════════
  *
- * CONCEPT - Mockito (framework de mocking) :
- * ==========================================
- * Un "mock" est un FAUX objet qui simule le comportement d'une dépendance.
- * Ici, on mock les 3 ports (persistence, events, IAM) pour tester TaskManager
- * ISOLÉMENT, sans base de données ni serveur HTTP.
+ * CORRECTIONS APPORTÉES :
+ * ──────────────────────
+ * 1. Toutes les signatures de méthode mises à jour pour correspondre
+ *    au code actuel (3+ paramètres avec rôle RBAC)
+ * 2. Ajout du mock ActivityLogService (était manquant)
+ * 3. Tests pour assignTask() — RBAC MANAGER/ADMIN/USER
+ * 4. Tests pour searchTasks() — RBAC ADMIN vs USER
+ * 5. Tests pour getTaskById() — propriétaire vs assigné vs ADMIN
+ * 6. Tests pour updateTask() — avec rôle
+ * 7. Tests pour deleteTask() — ADMIN vs propriétaire vs non-propriétaire
  *
- * CONCEPT - @Mock :
- * Crée un faux objet. Par défaut, toutes ses méthodes retournent null/0/false.
- * On doit "configurer" le comportement avec when().thenReturn().
+ * PRINCIPE DE MOCKITO :
+ * ─────────────────────
+ * @Mock crée un FAUX objet → on configure son comportement avec when().thenReturn()
+ * @InjectMocks crée l'objet testé et injecte les mocks dans ses dépendances
+ * verify() vérifie qu'une méthode du mock a été appelée
+ * ArgumentCaptor capture les arguments passés au mock pour vérification
  *
- * CONCEPT - @InjectMocks :
- * Crée l'objet à tester (TaskManager) et injecte automatiquement les @Mock
- * dans ses dépendances (constructeur).
- *
- * CONCEPT - verify() :
- * Permet de vérifier qu'une méthode du mock a été appelée.
- * Ex: verify(persistencePort).save(any()) → "le save a bien été appelé ?"
- *
- * CONCEPT - ArgumentCaptor :
- * Capture les arguments passés à un mock pour vérifier leur contenu.
+ * PRINCIPE @Nested :
+ * ──────────────────
+ * Groupement logique des tests par méthode testée.
+ * Avantages :
+ * - Lecture plus claire dans les rapports
+ * - Setup commun par groupe
+ * - Isolation conceptuelle
  */
-@ExtendWith(MockitoExtension.class)  // Active Mockito pour ce test
+@ExtendWith(MockitoExtension.class)
 class TaskManagerTest {
 
-    @Mock   // Faux port de persistance (simule la BDD)
+    @Mock
     private TaskPersistencePort persistencePort;
 
-    @Mock   // Faux éditeur d'événements (simule Kafka/domain events)
+    @Mock
     private EventPublisherPort eventPublisher;
 
-    @Mock   // Faux adaptateur IAM (simule le module de gestion des utilisateurs)
+    @Mock
     private UserInformationPort userInformationPort;
 
-    @InjectMocks  // Crée TaskManager avec les 3 mocks injectés
+    @Mock
+    private ActivityLogService activityLogService;
+
+    @InjectMocks
     private TaskManager taskManager;
 
-    // ============================================================
-    // TESTS : CRÉATION
-    // ============================================================
+    // ═══════════════════════════════════════════════════════
+    // CRÉATION DE TÂCHE
+    // ═══════════════════════════════════════════════════════
 
-    @Test
-    @DisplayName("createTask() devrait sauvegarder la tâche et publier un événement")
-    void createTask_shouldSaveAndPublishEvent() {
-        // ARRANGE : préparer le comportement des mocks
-        when(userInformationPort.getUserInfo("saadoune"))
-                .thenReturn(new UserInfo("saadoune", "ROLE_USER"));
-        when(persistencePort.save(any(Task.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0)); // retourne l'objet passé
+    @Nested
+    @DisplayName("createTask()")
+    class CreateTask {
 
-        // ACT : appeler la méthode à tester
-        Task result = taskManager.createTask("Ma tâche", "Description", "saadoune");
+        @Test
+        @DisplayName("Devrait sauvegarder la tâche et publier un événement")
+        void shouldSaveAndPublishEvent() {
+            // ARRANGE : préparer le comportement des mocks
+            when(userInformationPort.getUserInfo("saadoune@tasksphere.com"))
+                    .thenReturn(new UserInfo("saadoune", "ROLE_USER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
 
-        // ASSERT : vérifier les résultats
-        assertThat(result).isNotNull();
-        assertThat(result.title()).isEqualTo("Ma tâche");
-        assertThat(result.description()).isEqualTo("Description");
-        assertThat(result.status()).isEqualTo(Task.TaskStatus.TODO);
-        assertThat(result.priority()).isEqualTo(Task.TaskPriority.MEDIUM);
-        assertThat(result.userId()).isEqualTo("saadoune");
+            // ACT : appeler la méthode à tester (version 3 params)
+            Task result = taskManager.createTask("Ma tâche", "Description", "saadoune@tasksphere.com");
 
-        // Vérifier que persistencePort.save() a été appelé exactement 1 fois
-        verify(persistencePort, times(1)).save(any(Task.class));
+            // ASSERT : vérifier les résultats
+            assertThat(result).isNotNull();
+            assertThat(result.title()).isEqualTo("Ma tâche");
+            assertThat(result.status()).isEqualTo(Task.TaskStatus.TODO);
+            assertThat(result.priority()).isEqualTo(Task.TaskPriority.MEDIUM);
+            assertThat(result.userId()).isEqualTo("saadoune@tasksphere.com");
+            assertThat(result.assigneeId()).isNull();
 
-        // Vérifier que l'événement a été publié
-        verify(eventPublisher, times(1)).publishTaskCreated(any());
+            // Vérifier que persistencePort.save() a été appelé exactement 1 fois
+            verify(persistencePort, times(1)).save(any(Task.class));
+            // Vérifier que l'événement a été publié
+            verify(eventPublisher, times(1)).publishTaskCreated(any());
+            // Vérifier que l'audit a été enregistré
+            verify(activityLogService, times(1)).log(
+                    eq(ActivityLog.Action.TASK_CREATED), anyString(),
+                    eq("saadoune@tasksphere.com"), anyString(), anyString());
+        }
+
+        @Test
+        @DisplayName("Avec description null devrait utiliser une chaîne vide")
+        void withNullDescription_shouldUseEmptyString() {
+            when(userInformationPort.getUserInfo("saadoune@tasksphere.com"))
+                    .thenReturn(new UserInfo("saadoune", "ROLE_USER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Task result = taskManager.createTask("Titre", null, "saadoune@tasksphere.com");
+
+            assertThat(result.description()).isEqualTo("");
+        }
+
+        @Test
+        @DisplayName("Version 6 params avec priorité HIGH et dueDate")
+        void withFullParams_shouldSetAllFields() {
+            when(userInformationPort.getUserInfo("manager@tasksphere.com"))
+                    .thenReturn(new UserInfo("manager", "ROLE_MANAGER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            LocalDate dueDate = LocalDate.of(2026, 6, 15);
+            Task result = taskManager.createTask(
+                    "Tâche complète", "Description", "manager@tasksphere.com",
+                    "HIGH", dueDate, "saadoune@tasksphere.com"
+            );
+
+            assertThat(result.priority()).isEqualTo(Task.TaskPriority.HIGH);
+            assertThat(result.dueDate()).isEqualTo(dueDate);
+            assertThat(result.assigneeId()).isEqualTo("saadoune@tasksphere.com");
+        }
+
+        @Test
+        @DisplayName("Priorité invalide ('high' minuscule) devrait être ignorée → MEDIUM")
+        void withInvalidPriority_shouldFallbackToMedium() {
+            // CORRECTION B1 : valueOf() protégé par toUpperCase() + try-catch
+            when(userInformationPort.getUserInfo("user@test.com"))
+                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Task result = taskManager.createTask("Test", "Desc", "user@test.com",
+                    "high", null, null);
+
+            // "high".toUpperCase() = "HIGH" → valeur valide → acceptée
+            assertThat(result.priority()).isEqualTo(Task.TaskPriority.HIGH);
+        }
+
+        @Test
+        @DisplayName("Priorité totalement invalide ('URGENT') devrait tomber à MEDIUM")
+        void withNonExistentPriority_shouldFallbackToMedium() {
+            when(userInformationPort.getUserInfo("user@test.com"))
+                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Task result = taskManager.createTask("Test", "Desc", "user@test.com",
+                    "URGENT", null, null);
+
+            // "URGENT".toUpperCase() = "URGENT" → pas dans l'enum → MEDIUM par défaut
+            assertThat(result.priority()).isEqualTo(Task.TaskPriority.MEDIUM);
+        }
+
+        @Test
+        @DisplayName("USER qui tente d'assigner → assignation ignorée (B9)")
+        void userTryingToAssign_shouldIgnoreAssignment() {
+            // CORRECTION B9 : Défense en profondeur
+            when(userInformationPort.getUserInfo("user@test.com"))
+                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Task result = taskManager.createTask("Test", "Desc", "user@test.com",
+                    null, null, "assignee@test.com");
+
+            // L'assignation doit être ignorée car l'utilisateur est USER
+            assertThat(result.assigneeId()).isNull();
+        }
+
+        @Test
+        @DisplayName("MANAGER qui assigne → assignation acceptée")
+        void managerAssigning_shouldSucceed() {
+            when(userInformationPort.getUserInfo("manager@test.com"))
+                    .thenReturn(new UserInfo("manager", "ROLE_MANAGER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Task result = taskManager.createTask("Test", "Desc", "manager@test.com",
+                    null, null, "assignee@test.com");
+
+            assertThat(result.assigneeId()).isEqualTo("assignee@test.com");
+        }
+
+        @Test
+        @DisplayName("ADMIN qui assigne → assignation acceptée")
+        void adminAssigning_shouldSucceed() {
+            when(userInformationPort.getUserInfo("admin@test.com"))
+                    .thenReturn(new UserInfo("admin", "ROLE_ADMIN"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Task result = taskManager.createTask("Test", "Desc", "admin@test.com",
+                    null, null, "assignee@test.com");
+
+            assertThat(result.assigneeId()).isEqualTo("assignee@test.com");
+        }
     }
 
-    @Test
-    @DisplayName("createTask() avec description null devrait utiliser une chaîne vide")
-    void createTask_withNullDescription_shouldUseEmptyString() {
-        when(userInformationPort.getUserInfo("saadoune"))
-                .thenReturn(new UserInfo("saadoune", "ROLE_USER"));
-        when(persistencePort.save(any(Task.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+    // ═══════════════════════════════════════════════════════
+    // RÉCUPÉRATION PAR ID AVEC RBAC
+    // ═══════════════════════════════════════════════════════
 
-        Task result = taskManager.createTask("Titre", null, "saadoune");
+    @Nested
+    @DisplayName("getTaskById()")
+    class GetTaskById {
 
-        assertThat(result.description()).isEqualTo("");
+        @Test
+        @DisplayName("USER propriétaire → peut voir sa tâche")
+        void ownerUser_shouldSeeTask() {
+            Task task = Task.create("Ma tâche", "Desc", "user@test.com");
+            when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-1", "user@test.com"))
+                    .thenReturn(Optional.of(task));
+
+            Optional<Task> result = taskManager.getTaskById("task-1", "user@test.com", "USER");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().title()).isEqualTo("Ma tâche");
+        }
+
+        @Test
+        @DisplayName("USER assigné → peut voir la tâche (BUG 1 CORRIGÉ)")
+        void assigneeUser_shouldSeeTask() {
+            // CORRECTION BUG 1 : Un utilisateur assigné peut maintenant voir la tâche
+            Task task = Task.createWithAssignee("Tâche assignée", "Desc", "owner@test.com", "assignee@test.com");
+            when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-1", "assignee@test.com"))
+                    .thenReturn(Optional.of(task));
+
+            Optional<Task> result = taskManager.getTaskById("task-1", "assignee@test.com", "USER");
+
+            assertThat(result).isPresent();
+        }
+
+        @Test
+        @DisplayName("USER non propriétaire ni assigné → ne voit pas la tâche")
+        void otherUser_shouldNotSeeTask() {
+            when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-1", "other@test.com"))
+                    .thenReturn(Optional.empty());
+
+            Optional<Task> result = taskManager.getTaskById("task-1", "other@test.com", "USER");
+
+            assertThat(result).isEmpty();
+        }
+
+        @Test
+        @DisplayName("ADMIN → peut voir n'importe quelle tâche")
+        void admin_shouldSeeAnyTask() {
+            Task task = Task.create("Tâche privée", "Desc", "other@test.com");
+            when(persistencePort.findById("task-1"))
+                    .thenReturn(Optional.of(task));
+
+            Optional<Task> result = taskManager.getTaskById("task-1", "admin@test.com", "ADMIN");
+
+            assertThat(result).isPresent();
+        }
+
+        @Test
+        @DisplayName("MANAGER → peut voir n'importe quelle tâche")
+        void manager_shouldSeeAnyTask() {
+            Task task = Task.create("Tâche privée", "Desc", "other@test.com");
+            when(persistencePort.findById("task-1"))
+                    .thenReturn(Optional.of(task));
+
+            Optional<Task> result = taskManager.getTaskById("task-1", "manager@test.com", "MANAGER");
+
+            assertThat(result).isPresent();
+        }
     }
 
-    // ============================================================
-    // TESTS : RÉCUPÉRATION
-    // ============================================================
+    // ═══════════════════════════════════════════════════════
+    // MISE À JOUR AVEC RBAC
+    // ═══════════════════════════════════════════════════════
 
-    @Test
-    @DisplayName("getTaskById() devrait retourner la tâche si elle appartient à l'utilisateur")
-    void getTaskById_shouldReturnTaskIfOwner() {
-        Task task = Task.create("Ma tâche", "Desc", "saadoune");
-        when(persistencePort.findByIdAndUserId("task-1", "saadoune"))
-                .thenReturn(Optional.of(task));
+    @Nested
+    @DisplayName("updateTask()")
+    class UpdateTask {
 
-        Optional<Task> result = taskManager.getTaskById("task-1", "saadoune");
+        @Test
+        @DisplayName("USER propriétaire → peut modifier")
+        void ownerUser_shouldUpdate() {
+            Task existing = Task.create("Original", "Desc originale", "user@test.com");
+            when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-1", "user@test.com"))
+                    .thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertThat(result).isPresent();
-        assertThat(result.get().title()).isEqualTo("Ma tâche");
+            Optional<Task> result = taskManager.updateTask(
+                    "task-1", "user@test.com", "USER",
+                    "Nouveau titre", null, null, null);
+
+            assertThat(result).isPresent();
+            assertThat(result.get().title()).isEqualTo("Nouveau titre");
+            assertThat(result.get().description()).isEqualTo("Desc originale"); // inchangée
+        }
+
+        @Test
+        @DisplayName("USER assigné → peut modifier (BUG 1 CORRIGÉ)")
+        void assigneeUser_shouldUpdate() {
+            Task existing = Task.createWithAssignee("Tâche", "Desc", "owner@test.com", "assignee@test.com");
+            when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-1", "assignee@test.com"))
+                    .thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.updateTask(
+                    "task-1", "assignee@test.com", "USER",
+                    "Titre modifié", null, null, null);
+
+            assertThat(result).isPresent();
+        }
+
+        @Test
+        @DisplayName("Tâche inexistante → retourne empty")
+        void nonExistent_shouldReturnEmpty() {
+            when(persistencePort.findByIdAndUserIsOwnerOrAssignee("task-999", "user@test.com"))
+                    .thenReturn(Optional.empty());
+
+            Optional<Task> result = taskManager.updateTask(
+                    "task-999", "user@test.com", "USER", "Titre", null, null, null);
+
+            assertThat(result).isEmpty();
+            verify(persistencePort, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("ADMIN → peut modifier n'importe quelle tâche")
+        void admin_shouldUpdateAnyTask() {
+            Task existing = Task.create("Original", "Desc", "other@test.com");
+            when(persistencePort.findById("task-1"))
+                    .thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.updateTask(
+                    "task-1", "admin@test.com", "ADMIN",
+                    "Titre admin", null, "HIGH", null);
+
+            assertThat(result).isPresent();
+            assertThat(result.get().priority()).isEqualTo(Task.TaskPriority.HIGH);
+        }
     }
 
-    @Test
-    @DisplayName("getTaskById() devrait retourner empty si la tâche appartient à un autre")
-    void getTaskById_shouldReturnEmptyIfNotOwner() {
-        when(persistencePort.findByIdAndUserId("task-1", "autre-user"))
-                .thenReturn(Optional.empty());
+    // ═══════════════════════════════════════════════════════
+    // CHANGEMENT DE STATUT
+    // ═══════════════════════════════════════════════════════
 
-        Optional<Task> result = taskManager.getTaskById("task-1", "autre-user");
+    @Nested
+    @DisplayName("updateTaskStatus()")
+    class UpdateTaskStatus {
 
-        assertThat(result).isEmpty();
+        @Test
+        @DisplayName("DONE → completedAt renseigné automatiquement")
+        void done_shouldSetCompletedAt() {
+            Task existing = Task.create("Tâche", "Desc", "user@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.updateTaskStatus(
+                    "task-1", "user@test.com", "USER", "DONE");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().status()).isEqualTo(Task.TaskStatus.DONE);
+            assertThat(result.get().completedAt()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("DOING → completedAt null")
+        void doing_shouldNotSetCompletedAt() {
+            Task existing = Task.create("Tâche", "Desc", "user@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.updateTaskStatus(
+                    "task-1", "user@test.com", "USER", "DOING");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().completedAt()).isNull();
+        }
+
+        @Test
+        @DisplayName("Non-propriétaire non-assigné → rejeté")
+        void notOwnerNotAssignee_shouldBeRejected() {
+            Task existing = Task.create("Tâche", "Desc", "other@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+
+            Optional<Task> result = taskManager.updateTaskStatus(
+                    "task-1", "stranger@test.com", "USER", "DONE");
+
+            assertThat(result).isEmpty();
+        }
+
+        @Test
+        @DisplayName("Assigné → peut changer le statut")
+        void assignee_shouldChangeStatus() {
+            Task existing = Task.createWithAssignee("Tâche", "Desc", "owner@test.com", "assignee@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.updateTaskStatus(
+                    "task-1", "assignee@test.com", "USER", "DOING");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().status()).isEqualTo(Task.TaskStatus.DOING);
+        }
     }
 
-    // ============================================================
-    // TESTS : MISE À JOUR
-    // ============================================================
+    // ═══════════════════════════════════════════════════════
+    // ASSIGNATION DE TÂCHE
+    // ═══════════════════════════════════════════════════════
 
-    @Test
-    @DisplayName("updateTask() devrait mettre à jour uniquement les champs fournis")
-    void updateTask_shouldUpdateOnlyProvidedFields() {
-        Task existing = Task.create("Original", "Desc originale", "saadoune");
-        when(persistencePort.findByIdAndUserId("task-1", "saadoune"))
-                .thenReturn(Optional.of(existing));
-        when(persistencePort.save(any(Task.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+    @Nested
+    @DisplayName("assignTask()")
+    class AssignTask {
 
-        // Ne modifier que le titre (description et priorité null = pas modifiés)
-        Optional<Task> result = taskManager.updateTask(
-                "task-1", "saadoune", "Nouveau titre", null, null, null);
+        @Test
+        @DisplayName("MANAGER → peut assigner")
+        void manager_shouldAssign() {
+            Task existing = Task.create("Tâche", "Desc", "user@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertThat(result).isPresent();
-        assertThat(result.get().title()).isEqualTo("Nouveau titre");
-        assertThat(result.get().description()).isEqualTo("Desc originale");
-        assertThat(result.get().priority()).isEqualTo(Task.TaskPriority.MEDIUM); // inchangé
+            Optional<Task> result = taskManager.assignTask(
+                    "task-1", "manager@test.com", "MANAGER", "assignee@test.com");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().assigneeId()).isEqualTo("assignee@test.com");
+        }
+
+        @Test
+        @DisplayName("ADMIN → peut assigner")
+        void admin_shouldAssign() {
+            Task existing = Task.create("Tâche", "Desc", "user@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.assignTask(
+                    "task-1", "admin@test.com", "ADMIN", "assignee@test.com");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().assigneeId()).isEqualTo("assignee@test.com");
+        }
+
+        @Test
+        @DisplayName("USER → ne peut PAS assigner")
+        void user_shouldNotAssign() {
+            Optional<Task> result = taskManager.assignTask(
+                    "task-1", "user@test.com", "USER", "assignee@test.com");
+
+            assertThat(result).isEmpty();
+            verify(persistencePort, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("Assigner avec assigneeId vide → désassignation")
+        void emptyAssigneeId_shouldUnassign() {
+            Task existing = Task.createWithAssignee("Tâche", "Desc", "owner@test.com", "old@test.com");
+            when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            Optional<Task> result = taskManager.assignTask(
+                    "task-1", "manager@test.com", "MANAGER", "");
+
+            assertThat(result).isPresent();
+            assertThat(result.get().assigneeId()).isNull();
+        }
     }
 
-    @Test
-    @DisplayName("updateTask() sur tâche inexistante devrait retourner empty")
-    void updateTask_nonExistent_shouldReturnEmpty() {
-        when(persistencePort.findByIdAndUserId("task-999", "saadoune"))
-                .thenReturn(Optional.empty());
+    // ═══════════════════════════════════════════════════════
+    // SOFT DELETE AVEC RBAC
+    // ═══════════════════════════════════════════════════════
 
-        Optional<Task> result = taskManager.updateTask(
-                "task-999", "saadoune", "Titre", null, null, null);
+    @Nested
+    @DisplayName("deleteTask()")
+    class DeleteTask {
 
-        assertThat(result).isEmpty();
-        // Le save NE DOIT PAS être appelé si la tâche n'existe pas
-        verify(persistencePort, never()).save(any());
+        @Test
+        @DisplayName("Propriétaire → peut supprimer")
+        void owner_shouldDelete() {
+            Task existing = Task.create("Tâche", "Desc", "user@test.com");
+            when(persistencePort.findByIdAndUserId("task-1", "user@test.com"))
+                    .thenReturn(Optional.of(existing));
+
+            boolean result = taskManager.deleteTask("task-1", "user@test.com", "USER");
+
+            assertThat(result).isTrue();
+            verify(persistencePort, times(1)).softDelete("task-1");
+        }
+
+        @Test
+        @DisplayName("ADMIN → peut supprimer n'importe quelle tâche")
+        void admin_shouldDeleteAnyTask() {
+            when(persistencePort.findById("task-1"))
+                    .thenReturn(Optional.of(Task.create("Tâche", "Desc", "other@test.com")));
+
+            boolean result = taskManager.deleteTask("task-1", "admin@test.com", "ADMIN");
+
+            assertThat(result).isTrue();
+            verify(persistencePort, times(1)).softDelete("task-1");
+        }
+
+        @Test
+        @DisplayName("Non-propriétaire non-ADMIN → ne peut pas supprimer")
+        void nonOwner_shouldNotDelete() {
+            when(persistencePort.findByIdAndUserId("task-1", "other@test.com"))
+                    .thenReturn(Optional.empty());
+
+            boolean result = taskManager.deleteTask("task-1", "other@test.com", "USER");
+
+            assertThat(result).isFalse();
+            verify(persistencePort, never()).softDelete(any());
+        }
     }
 
-    // ============================================================
-    // TESTS : CHANGEMENT DE STATUT
-    // ============================================================
+    // ═══════════════════════════════════════════════════════
+    // RECHERCHE AVEC RBAC
+    // ═══════════════════════════════════════════════════════
 
-    @Test
-    @DisplayName("updateTaskStatus(DONE) devrait renseigner completedAt")
-    void updateTaskStatus_done_shouldSetCompletedAt() {
-        Task existing = Task.create("Tâche", "Desc", "saadoune");
-        when(persistencePort.findByIdAndUserId("task-1", "saadoune"))
-                .thenReturn(Optional.of(existing));
-        when(persistencePort.save(any(Task.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+    @Nested
+    @DisplayName("searchTasks()")
+    class SearchTasks {
 
-        Optional<Task> result = taskManager.updateTaskStatus("task-1", "saadoune", "DONE");
+        @Test
+        @DisplayName("ADMIN → recherche globale (pas de filtre utilisateur)")
+        void admin_shouldSearchGlobally() {
+            Task task = Task.create("Tâche", "Desc", "other@test.com");
+            Page<Task> page = new PageImpl<>(List.of(task));
+            when(persistencePort.searchTasks(any(), any(Pageable.class)))
+                    .thenReturn(page);
 
-        assertThat(result).isPresent();
-        assertThat(result.get().status()).isEqualTo(Task.TaskStatus.DONE);
-        assertThat(result.get().completedAt()).isNotNull();
+            var criteria = new TaskPersistencePort.TaskSearchCriteria(
+                    null, null, null, null, null, null, null, null, null);
+
+            Page<Task> result = taskManager.searchTasks(
+                    criteria, 0, 20, "createdAt", "desc", "admin@test.com", "ADMIN");
+
+            assertThat(result.getContent()).hasSize(1);
+            verify(persistencePort).searchTasks(any(), any(Pageable.class));
+            verify(persistencePort, never()).searchTasksForUser(anyString(), any(), any());
+        }
+
+        @Test
+        @DisplayName("USER → recherche limitée aux tâches où il est impliqué")
+        void user_shouldSearchOnlyOwnAndAssigned() {
+            Task task = Task.create("Tâche", "Desc", "user@test.com");
+            Page<Task> page = new PageImpl<>(List.of(task));
+            when(persistencePort.searchTasksForUser(eq("user@test.com"), any(), any(Pageable.class)))
+                    .thenReturn(page);
+
+            var criteria = new TaskPersistencePort.TaskSearchCriteria(
+                    null, null, null, null, null, null, null, null, null);
+
+            Page<Task> result = taskManager.searchTasks(
+                    criteria, 0, 20, "createdAt", "desc", "user@test.com", "USER");
+
+            assertThat(result.getContent()).hasSize(1);
+            verify(persistencePort).searchTasksForUser(eq("user@test.com"), any(), any(Pageable.class));
+            verify(persistencePort, never()).searchTasks(any(), any(Pageable.class));
+        }
     }
 
-    // ============================================================
-    // TESTS : SOFT DELETE
-    // ============================================================
+    // ═══════════════════════════════════════════════════════
+    // AUDIT TRAIL — Fail-safe
+    // ═══════════════════════════════════════════════════════
 
-    @Test
-    @DisplayName("deleteTask() devrait appeler softDelete et retourner true")
-    void deleteTask_shouldCallSoftDeleteAndReturnTrue() {
-        Task existing = Task.create("Tâche", "Desc", "saadoune");
-        when(persistencePort.findByIdAndUserId("task-1", "saadoune"))
-                .thenReturn(Optional.of(existing));
+    @Nested
+    @DisplayName("Audit Trail")
+    class AuditTrail {
 
-        boolean result = taskManager.deleteTask("task-1", "saadoune");
+        @Test
+        @DisplayName("Si l'audit échoue, l'opération métier réussit quand même")
+        void auditFailure_shouldNotBlockBusinessOperation() {
+            // ARRANGE : l'audit lève une exception
+            when(userInformationPort.getUserInfo("user@test.com"))
+                    .thenReturn(new UserInfo("user", "ROLE_USER"));
+            when(persistencePort.save(any(Task.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            doThrow(new RuntimeException("DB audit indisponible"))
+                    .when(activityLogService).log(any(), anyString(), anyString(), anyString(), anyString());
 
-        assertThat(result).isTrue();
-        // Vérifier que softDelete a été appelé avec le bon ID
-        verify(persistencePort, times(1)).softDelete("task-1");
-    }
+            // ACT : la création ne doit PAS planter
+            Task result = taskManager.createTask("Test audit fail", "Desc", "user@test.com");
 
-    @Test
-    @DisplayName("deleteTask() sur tâche inexistante devrait retourner false sans appeler softDelete")
-    void deleteTask_nonExistent_shouldReturnFalse() {
-        when(persistencePort.findByIdAndUserId("task-999", "saadoune"))
-                .thenReturn(Optional.empty());
-
-        boolean result = taskManager.deleteTask("task-999", "saadoune");
-
-        assertThat(result).isFalse();
-        verify(persistencePort, never()).softDelete(any());
+            // ASSERT : la tâche est créée malgré l'échec de l'audit
+            assertThat(result).isNotNull();
+            assertThat(result.title()).isEqualTo("Test audit fail");
+        }
     }
 }
