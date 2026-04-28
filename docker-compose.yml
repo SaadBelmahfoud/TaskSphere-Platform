@@ -1,0 +1,126 @@
+# ═══════════════════════════════════════════════════════════════════
+# DOCKER COMPOSE — Orchestration des conteneurs TaskSphere
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRINCIPE : docker-compose démarre et relie PLUSIEURS conteneurs.
+# Chaque "service" est un conteneur avec sa propre configuration.
+# Les conteneurs peuvent communiquer via un réseau Docker interne.
+#
+# ARCHITECTURE :
+# ┌──────────────────────────────────────────────────────────┐
+# │ Docker Network: tasksphere-network                       │
+# │                                                          │
+# │  ┌──────────┐      ┌──────────┐      ┌──────────┐      │
+# │  │ frontend │ ───→ │ backend  │ ───→ │ postgres │      │
+# │  │ :3000    │      │ :8080    │      │ :5432    │      │
+# │  └──────────┘      └──────────┘      └──────────┘      │
+# │                                                          │
+# │  Les conteneurs se rejoignent par leur nom de service    │
+# │  (ex: backend se connecte à "postgres:5432")             │
+# └──────────────────────────────────────────────────────────┘
+#
+# COMMANDES :
+#   docker-compose up -d          → Démarrer tous les services
+#   docker-compose down           → Arrêter tous les services
+#   docker-compose logs -f backend → Voir les logs du backend
+#   docker-compose ps             → Statut des services
+#
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 1 : PostgreSQL (Base de données)
+  # ═══════════════════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: tasksphere-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-taskspheredb}
+      POSTGRES_USER: ${DB_USERNAME:-tasksphere}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+    ports:
+      # Port exposé sur l'hôte : port interne du conteneur
+      # Utile pour accéder à la base avec pgAdmin ou DBeaver
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      # VOLUME : Les données PostgreSQL persistent entre les redémarrages.
+      # Sans volume, les données sont perdues quand le conteneur est supprimé.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Vérifie que PostgreSQL est prêt à accepter des connexions
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tasksphere}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tasksphere-network
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 2 : Backend Spring Boot
+  # ═══════════════════════════════════════════════════════
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tasksphere-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    environment:
+      # Profil Spring : active la configuration PostgreSQL
+      SPRING_PROFILES_ACTIVE: postgres
+      # Connexion à PostgreSQL (utilise le nom du service "postgres" comme hostname)
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-taskspheredb}
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-tasksphere}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+      # Clé secrète JWT (OBLIGATOIRE en production !)
+      JWT_SECRET: ${JWT_SECRET:-tasksphere-prod-secret-key-change-me-in-production-256bits}
+      # Mot de passe de l'utilisateur initial
+      INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:-password123}
+    depends_on:
+      # Le backend attend que PostgreSQL soit prêt avant de démarrer
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - tasksphere-network
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 3 : Frontend Next.js (optionnel)
+  # ═══════════════════════════════════════════════════════
+  frontend:
+    build:
+      context: ../TaskSphere-Frontend
+      dockerfile: Dockerfile
+    container_name: tasksphere-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_API_MODE: local
+    depends_on:
+      - backend
+    networks:
+      - tasksphere-network
+
+# ═══════════════════════════════════════════════════════
+# VOLUMES : Persistance des données
+# ═══════════════════════════════════════════════════════
+volumes:
+  postgres_data:
+  # Les données sont stockées dans un volume Docker nommé.
+  # Elles persistent même si le conteneur PostgreSQL est recréé.
+  # Pour supprimer les données : docker-compose down -v
+
+# ═══════════════════════════════════════════════════════
+# RÉSEAUX : Communication entre les conteneurs
+# ═══════════════════════════════════════════════════════
+networks:
+  tasksphere-network:
+    driver: bridge

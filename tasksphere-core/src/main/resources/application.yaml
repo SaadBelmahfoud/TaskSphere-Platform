@@ -48,3 +48,49 @@ springdoc:
   api-docs:
     path: /v3/api-docs
     enabled: true
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRING BOOT ACTUATOR — Monitoring de l'application
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRINCIPE : Actuator expose des endpoints de monitoring.
+# En développement, on expose tout pour le diagnostic.
+# En production, on n'expose que health et info.
+management:
+  endpoints:
+    web:
+      exposure:
+        # En dev : exposer tous les endpoints
+        include: health,info,metrics,env,loggers,beans
+      base-path: /actuator  # Chemin de base (défaut)
+  endpoint:
+    health:
+      # Détails complets sur la santé (connexion DB, disk space, etc.)
+      show-details: always
+      # Health groups : regrouper des checks de santé
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
+    info:
+      enabled: true
+    metrics:
+      enabled: true
+  # Métriques personnalisées
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  info:
+    # Construit l'endpoint /actuator/info avec les propriétés info.*
+    build:
+      enabled: true
+    env:
+      enabled: true
+
+# Information sur l'application (exposée via /actuator/info)
+info:
+  app:
+    name: TaskSphere Platform
+    description: Application de gestion de tâches
+    version: 0.0.1-SNAPSHOT

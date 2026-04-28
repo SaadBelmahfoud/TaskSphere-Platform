@@ -37,6 +37,16 @@
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- ===== AJOUT SPRINT 5 : PostgreSQL JDBC Driver ===== -->
+        <!-- PRINCIPE : Le driver JDBC permet à Java de communiquer avec PostgreSQL.
+             Spring Boot auto-configure la connexion à partir des propriétés YAML.
+             Le driver est en scope "runtime" car il n'est utilisé qu'à l'exécution,
+             pas à la compilation (on utilise l'API JDBC standard). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-spring-boot3</artifactId>
