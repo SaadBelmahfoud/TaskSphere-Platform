@@ -18,3 +18,19 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# ═══════════════════════════════════════════
+# ENVIRONNEMENT & SECRETS (SPRINT 5)
+# ═══════════════════════════════════════════
+# .env contient des mots de passe et clés secrètes.
+# Il NE DOIT JAMAIS être commité dans Git.
+.env
+.env.*
+
+# Certificats SSL (clés privées)
+nginx/ssl/*.key
+nginx/ssl/*.p12
+
+# Keystore Spring Boot
+*.p12
+*.jks

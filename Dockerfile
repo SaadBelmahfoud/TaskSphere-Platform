@@ -18,11 +18,25 @@
 #
 # SÉCURITÉ : L'image finale ne contient PAS le code source Java.
 # Même si quelqu'un accède au conteneur, il ne peut pas lire le code.
+#
+# ═══════════════════════════════════════════════════════════════════
+# CORRECTION SPRINT 5 — Utilisation de l'image Maven officielle
+# ═══════════════════════════════════════════════════════════════════
+#
+# AVANT : apk add --no-cache maven
+#   → Version Maven non contrôlée (celle du dépôt Alpine)
+#   → Risque d'incompatibilité avec le projet
+#   → Pas de cache Maven entre les builds
+#
+# APRÈS : Image maven:3.9-eclipse-temurin-17
+#   → Version Maven contrôlée et compatible avec Java 17
+#   → Cache Maven optimisé (volume .m2)
+#   → Image officielle maintenue par Docker Hub
 
 # ═══════════════════════════════════════════════════════
 # STAGE 1 : BUILD — Compiler le projet avec Maven
 # ═══════════════════════════════════════════════════════
-FROM eclipse-temurin:17-jdk-alpine AS build
+FROM maven:3.9-eclipse-temurin-17 AS build
 
 # Répertoire de travail dans le conteneur
 WORKDIR /app
@@ -39,8 +53,8 @@ COPY tasksphere-core/pom.xml tasksphere-core/
 
 # Télécharger les dépendances Maven (cache layer)
 # -B = batch mode (pas de progression interactive)
-RUN apk add --no-cache maven && \
-    mvn dependency:go-offline -B
+# Ce layer est reconstruit UNIQUEMENT si pom.xml change.
+RUN mvn dependency:go-offline -B
 
 # Copier le code source
 COPY . .

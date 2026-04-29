@@ -56,6 +56,46 @@ springdoc:
 # PRINCIPE : Actuator expose des endpoints de monitoring.
 # En développement, on expose tout pour le diagnostic.
 # En production, on n'expose que health et info.
+#
+# ═══════════════════════════════════════════════════════════════════
+# CORRECTION SPRINT 5 — Suppression des health groups readiness/liveness
+# ═══════════════════════════════════════════════════════════════════
+#
+# PROBLÈME :
+#   Les health groups "readiness" et "liveness" référenciaient
+#   "readinessState" et "livenessState" qui nécessitent la dépendance
+#   spring-boot-starter-availability (NON présente dans le projet).
+#   → Erreur au démarrage : "Included health contributor 'readinessState'
+#     in group 'readiness' does not exist"
+#   → L'application CRASH en boucle (restart_policy: unless-stopped)
+#
+# SOLUTION :
+#   Supprimer les health groups readiness/liveness de application.yaml.
+#   Ces groups sont utiles SEULEMENT si on utilise les
+#   Kubernetes Probes (Liveness/Readiness), ce qui nécessite :
+#     1. La dépendance spring-boot-starter-availability dans pom.xml
+#     2. La propriété management.endpoint.health.probes.enabled=true
+#
+#   Sans Kubernetes, les health groups par défaut (db, diskSpace, ping)
+#   sont suffisants pour Docker healthcheck et monitoring.
+#
+#   Pour ajouter les probes Kubernetes plus tard :
+#     - Ajouter la dépendance dans tasksphere-core/pom.xml :
+#       <dependency>
+#           <groupId>org.springframework.boot</groupId>
+#           <artifactId>spring-boot-starter-availability</artifactId>
+#       </dependency>
+#     - Ajouter dans application.yaml :
+#       management:
+#         endpoint:
+#           health:
+#             probes:
+#               enabled: true
+#             group:
+#               readiness:
+#                 include: readinessState,db
+#               liveness:
+#                 include: livenessState
 management:
   endpoints:
     web:
@@ -67,12 +107,6 @@ management:
     health:
       # Détails complets sur la santé (connexion DB, disk space, etc.)
       show-details: always
-      # Health groups : regrouper des checks de santé
-      group:
-        readiness:
-          include: readinessState,db
-        liveness:
-          include: livenessState
     info:
       enabled: true
     metrics:

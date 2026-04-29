@@ -34,7 +34,7 @@ spring:
     # - host : localhost en dev, postgres (nom du conteneur) en Docker
     # - port : 5432 (port par défaut de PostgreSQL)
     # - database : taskspheredb (nom de la base)
-    # - sslmode=require : chiffrement SSL obligatoire
+    # - sslmode : chiffrement SSL (disable en dev, require en prod)
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:taskspheredb}?sslmode=${DB_SSL_MODE:disable}
     username: ${DB_USERNAME:tasksphere}
     password: ${DB_PASSWORD:tasksphere123}
@@ -97,7 +97,7 @@ spring:
   # └───────────────────────────────────────────────────────┘
   flyway:
     enabled: true
-    # baseline-on-create : crée la table flyway_schema_history si elle n'existe pas
+    # baseline-on-migrate : crée la table flyway_schema_history si elle n'existe pas
     baseline-on-migrate: true
     # Emplacement des scripts SQL (classpath:db/migration)
     locations: classpath:db/migration
@@ -113,9 +113,44 @@ init:
   user:
     password: ${INIT_USER_PASSWORD:password123}
 
-# Port du serveur
+# ═══════════════════════════════════════════════════════════════════
+# CORS — Origines autorisées (configurable via variable d'environnement)
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 5 : Origines CORS configurables pour la production.
+# En dev : http://localhost:3000
+# En prod : https://tasksphere.example.com
+# Multi-origines : séparer par des virgules
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
+# ═══════════════════════════════════════════════════════════════════
+# HTTPS / SSL — Chiffrement des communications
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 5 : Support HTTPS pour la production.
+#
+# DEUX APPROCHES POSSIBLES :
+# ──────────────────────────
+# 1. REVERSE PROXY (recommandé) :
+#    Spring Boot tourne en HTTP interne, un nginx/Caddy gère le SSL.
+#    → Pas besoin de configurer server.ssl ci-dessous
+#    → Le reverse proxy fait SSL termination
+#
+# 2. SSL DIRECT Spring Boot :
+#    Spring Boot gère lui-même le HTTPS avec un keystore PKCS12.
+#    → Activer avec SSL_ENABLED=true
+#    → Fournir le keystore via SSL_KEYSTORE_PATH et SSL_KEYSTORE_PASSWORD
+#    → Générer un keystore dev : voir scripts/generate-keystore.sh
+#
+# EN DÉFAUT : SSL désactivé (mode reverse proxy ou dev)
 server:
   port: 8080
+  ssl:
+    enabled: ${SSL_ENABLED:false}
+    # Chemin vers le keystore PKCS12 (relatif ou absolu)
+    key-store: ${SSL_KEYSTORE_PATH:}
+    key-store-password: ${SSL_KEYSTORE_PASSWORD:}
+    key-store-type: PKCS12
+    key-alias: ${SSL_KEY_ALIAS:tasksphere}
 
 # Actuator en mode PRODUCTION : endpoints limités
 management:
