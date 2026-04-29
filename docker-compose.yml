@@ -92,22 +92,28 @@ services:
       - tasksphere-network
 
   # ═══════════════════════════════════════════════════════
-  # SERVICE 3 : Frontend Next.js (optionnel)
+  # SERVICE 3 : Frontend Next.js (DÉSACTIVÉ — à activer quand le repo Frontend sera prêt)
   # ═══════════════════════════════════════════════════════
-  frontend:
-    build:
-      context: ../TaskSphere-Frontend
-      dockerfile: Dockerfile
-    container_name: tasksphere-frontend
-    restart: unless-stopped
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    environment:
-      NEXT_PUBLIC_API_MODE: local
-    depends_on:
-      - backend
-    networks:
-      - tasksphere-network
+  # NOTE : Ce service est commenté car le repo TaskSphere-Frontend
+  # n'est pas encore dans le même workspace. Pour l'activer :
+  # 1. Clonez le repo frontend à côté de ce repo
+  # 2. Décommentez ce bloc
+  # 3. Lancez docker-compose up -d
+  #
+  # frontend:
+  #   build:
+  #     context: ../TaskSphere-Frontend
+  #     dockerfile: Dockerfile
+  #   container_name: tasksphere-frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${FRONTEND_PORT:-3000}:3000"
+  #   environment:
+  #     NEXT_PUBLIC_API_MODE: local
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - tasksphere-network
 
 # ═══════════════════════════════════════════════════════
 # VOLUMES : Persistance des données

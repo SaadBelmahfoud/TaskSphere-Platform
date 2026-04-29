@@ -32,11 +32,17 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+
+        <!-- ===== Base de données : H2 (DEV uniquement) ===== -->
+        <!-- Scope "test" : H2 n'est disponible QUE dans les tests.
+             En production, on utilise PostgreSQL. Cela évite qu'H2
+             soit accidentellement auto-configuré en production. -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>runtime</scope>
+            <scope>test</scope>
         </dependency>
+
         <!-- ===== AJOUT SPRINT 5 : PostgreSQL JDBC Driver ===== -->
         <!-- PRINCIPE : Le driver JDBC permet à Java de communiquer avec PostgreSQL.
              Spring Boot auto-configure la connexion à partir des propriétés YAML.
@@ -47,6 +53,34 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+
+        <!-- ===== AJOUT SPRINT 5 : Flyway — Migrations de base de données ===== -->
+        <!-- PRINCIPE : Flyway exécute les scripts SQL (V1, V2, ...) dans l'ordre
+             pour créer et versionner le schéma de la base de données.
+             - flyway-core : moteur principal de migration
+             - flyway-database-postgresql : support PostgreSQL (OBLIGATOIRE avec Spring Boot 3.x)
+               Sans ce module, Flyway ne peut pas se connecter à PostgreSQL et échoue avec
+               "Unsupported database: PostgreSQL" -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- ===== AJOUT SPRINT 5 : Spring Boot Actuator ===== -->
+        <!-- PRINCIPE : Actuator expose des endpoints de monitoring et de santé.
+             - /actuator/health : utilisé par Docker pour vérifier que l'app répond
+             - /actuator/info : informations sur l'application
+             - /actuator/metrics : métriques de performance
+             Sans cette dépendance, les endpoints /actuator/* retournent 404. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-spring-boot3</artifactId>

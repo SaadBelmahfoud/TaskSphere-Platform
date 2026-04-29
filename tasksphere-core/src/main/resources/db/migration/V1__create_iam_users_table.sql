@@ -14,6 +14,16 @@
 -- RAPPEL : En PostgreSQL, les identifiants (noms de tables/colonnes)
 -- sont insensibles à la casse sauf s'ils sont entre guillemets doubles.
 -- On utilise les minuscules par convention.
+--
+-- CORRECTION SPRINT 5 : created_at passé en NOT NULL
+-- ──────────────────────────────────────────────────
+-- AVANT : created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP (nullable)
+-- → Incohérent avec les autres tables (V2-V5) où created_at est NOT NULL
+-- → L'entité UserEntity a désormais un champ createdAt avec @PrePersist
+--
+-- APRÈS : created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+-- → Cohérent avec RefreshTokenEntity et les tables Core
+-- → @PrePersist valorise automatiquement createdAt avant l'INSERT
 
 CREATE TABLE IF NOT EXISTS iam_users (
                                          id              VARCHAR(36)    NOT NULL PRIMARY KEY,  -- UUID en format texte
@@ -25,8 +35,8 @@ CREATE TABLE IF NOT EXISTS iam_users (
     last_name       VARCHAR(100),                          -- Nom de famille
     avatar_url      VARCHAR(500),                          -- URL de l'avatar (optionnel)
     enabled         BOOLEAN        NOT NULL DEFAULT TRUE,  -- Compte actif/désactivé
-    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
-    last_login      TIMESTAMP
+    created_at      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- ← CORRECTION SPRINT 5 : NOT NULL
+    last_login      TIMESTAMP                               -- Dernière connexion (nullable)
     );
 
 -- Index pour accélérer les recherches par email (utilisé par le login)

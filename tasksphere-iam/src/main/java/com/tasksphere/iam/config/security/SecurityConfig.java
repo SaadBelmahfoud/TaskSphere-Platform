@@ -88,6 +88,22 @@ import java.util.List;
  * ────────────────────
  * La console H2 (/h2-console/**) passe de hasRole("ADMIN") à permitAll().
  * Raison : la console H2 ne peut pas envoyer de JWT → boucle de redirect.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION SPRINT 5 — Actuator health endpoint
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ *   Le Dockerfile et docker-compose.yml utilisent /actuator/health pour
+ *   le healthcheck Docker. Mais SecurityConfig bloque tout endpoint non
+ *   explicitement permis avec .anyRequest().authenticated().
+ *   → /actuator/health retourne 401 → Docker marque le conteneur unhealthy.
+ *
+ * SOLUTION :
+ *   Ajouter .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+ *   pour permettre au healthcheck Docker d'accéder à ces endpoints SANS JWT.
+ *   On n'expose QUE health et info (pas metrics, env, beans, etc.) car ils
+ *   contiennent des informations sensibles.
  */
 @Configuration
 @EnableWebSecurity
@@ -138,6 +154,14 @@ public class SecurityConfig {
                                 "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**",
                                 "/v3/api-docs.yaml", "/swagger-resources/**", "/webjars/**"
                         ).permitAll()
+                        // ═══════════════════════════════════════════════════════
+                        // [SPRINT 5] CORRECTION : Actuator health — permitAll()
+                        // ═══════════════════════════════════════════════════════
+                        // Le healthcheck Docker accède à /actuator/health SANS JWT.
+                        // Sans cette règle, il reçoit 401 → conteneur unhealthy.
+                        // On n'expose QUE health et info (pas metrics, env, beans).
+                        // ═══════════════════════════════════════════════════════
+                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         // ═══════════════════════════════════════════════════════
                         // ENDPOINTS SECTION 6 — Couverts par anyRequest().authenticated()
                         // ═══════════════════════════════════════════════════════
