@@ -71,7 +71,7 @@ services:
       # Profil Spring : active la configuration PostgreSQL
       SPRING_PROFILES_ACTIVE: postgres
       # Connexion à PostgreSQL (utilise le nom du service "postgres" comme hostname)
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-taskspheredb}&stringtype=unspecified
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-taskspheredb}?stringtype=unspecified
       SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-tasksphere}
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-tasksphere123}
       # SPRINT 5 : DB_HOST pour le profil postgres (utilisé par application-postgres.yml)
