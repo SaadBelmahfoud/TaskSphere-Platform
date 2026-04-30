@@ -131,9 +131,30 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *                OR LOWER(title) LIKE '%urgence%'        → évalué
      *                OR LOWER(description) LIKE '%urgence%') → évalué)
      *         AND (NULL IS NULL                    → TRUE
-     *                OR t.status = NULL)            → ignoré
+     *                OR t.status = NULL)            → ignoré)
      *
      * → Résultat : filtre sur keyword uniquement !
+     *
+     * CORRECTION V6 — cast(:keyword as string) :
+     * ──────────────────────────────────────────────
+     * PROBLÈME : Hibernate 6.6 utilise setObject() pour lier
+     * les paramètres String au lieu de setString(). Le driver
+     * JDBC PostgreSQL interprète alors le paramètre comme bytea
+     * au lieu de varchar/text. La concaténation '%' || bytea produit
+     * du bytea, et lower(bytea) n'existe pas → ERREUR 500.
+     *
+     * AVANT : LOWER(CONCAT('%', :keyword, '%'))
+     *   → Hibernate génère : lower(('%'||?||'%'))
+     *   → Le driver JDBC lie ? comme bytea → lower(bytea) = ERREUR
+     *
+     * APRÈS : LOWER(CONCAT('%', cast(:keyword as string), '%'))
+     *   → Hibernate génère : lower(('%'||cast(? as varchar)||'%'))
+     *   → Le cast force PostgreSQL à traiter ? comme varchar
+     *   → lower(varchar) = FONCTIONNE ✅
+     *
+     * POURQUOI stringtype=unspecified NE MARCHE PAS :
+     * Ce paramètre JDBC ne fonctionne qu'avec setString().
+     * Or Hibernate 6.6 utilise setObject() → le paramètre est ignoré.
      *
      * FILTRES DISPONIBLES (9 filtres + pagination) :
      * ────────────────────────────────────────────
@@ -151,8 +172,8 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * le LIMIT/OFFSET via page et size.
      */
     @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
-            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
-            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
+            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
+            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%'))) " +
             "AND (:userId IS NULL OR t.userId = :userId) " +
             "AND (:assigneeId IS NULL OR t.assigneeId = :assigneeId) " +
             "AND (:status IS NULL OR t.status = :status) " +
@@ -216,12 +237,16 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * → Les filtres additionnels (keyword, status, priority, etc.) restent
      *   identiques à searchTasks().
      *
+     * CORRECTION V6 — cast(:keyword as string) :
+     * Même correction que searchTasks() pour le bug lower(bytea).
+     * Voir la Javadoc de searchTasks() pour l'explication complète.
+     *
      * UTILISÉE PAR : TaskManager.searchTasks() pour USER
      */
     @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
             "AND (t.userId = :username OR t.assigneeId = :username) " +
-            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
-            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
+            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
+            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%'))) " +
             "AND (:status IS NULL OR t.status = :status) " +
             "AND (:priority IS NULL OR t.priority = :priority) " +
             "AND (:dueDateFrom IS NULL OR t.dueDate >= :dueDateFrom) " +
