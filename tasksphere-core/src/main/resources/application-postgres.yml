@@ -35,7 +35,7 @@ spring:
     # - port : 5432 (port par défaut de PostgreSQL)
     # - database : taskspheredb (nom de la base)
     # - sslmode : chiffrement SSL (disable en dev, require en prod)
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:taskspheredb}?sslmode=${DB_SSL_MODE:disable}&stringtype=unspecified
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:taskspheredb}?sslmode=${DB_SSL_MODE:disable}
     username: ${DB_USERNAME:tasksphere}
     password: ${DB_PASSWORD:tasksphere123}
     driver-class-name: org.postgresql.Driver
