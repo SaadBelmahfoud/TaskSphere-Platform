@@ -131,30 +131,9 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *                OR LOWER(title) LIKE '%urgence%'        → évalué
      *                OR LOWER(description) LIKE '%urgence%') → évalué)
      *         AND (NULL IS NULL                    → TRUE
-     *                OR t.status = NULL)            → ignoré)
+     *                OR t.status = NULL)            → ignoré
      *
      * → Résultat : filtre sur keyword uniquement !
-     *
-     * CORRECTION V6 — cast(:keyword as string) :
-     * ──────────────────────────────────────────────
-     * PROBLÈME : Hibernate 6.6 utilise setObject() pour lier
-     * les paramètres String au lieu de setString(). Le driver
-     * JDBC PostgreSQL interprète alors le paramètre comme bytea
-     * au lieu de varchar/text. La concaténation '%' || bytea produit
-     * du bytea, et lower(bytea) n'existe pas → ERREUR 500.
-     *
-     * AVANT : LOWER(CONCAT('%', :keyword, '%'))
-     *   → Hibernate génère : lower(('%'||?||'%'))
-     *   → Le driver JDBC lie ? comme bytea → lower(bytea) = ERREUR
-     *
-     * APRÈS : LOWER(CONCAT('%', cast(:keyword as string), '%'))
-     *   → Hibernate génère : lower(('%'||cast(? as varchar)||'%'))
-     *   → Le cast force PostgreSQL à traiter ? comme varchar
-     *   → lower(varchar) = FONCTIONNE ✅
-     *
-     * POURQUOI stringtype=unspecified NE MARCHE PAS :
-     * Ce paramètre JDBC ne fonctionne qu'avec setString().
-     * Or Hibernate 6.6 utilise setObject() → le paramètre est ignoré.
      *
      * FILTRES DISPONIBLES (9 filtres + pagination) :
      * ────────────────────────────────────────────
@@ -170,18 +149,49 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *
      * PAGINATION : Spring Data Pageable gère automatiquement
      * le LIMIT/OFFSET via page et size.
+     *
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG POSTGRESQL + HIBERNATE 6.6 — cast() obligatoire
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME : Hibernate 6.6 utilise setObject() au lieu de setString()
+     * pour binder les paramètres JPQL. Quand un paramètre est null,
+     * PostgreSQL ne peut pas déterminer son type dans "? IS NULL".
+     * → ERROR: could not determine data type of parameter $N
+     *
+     * SOLUTION : Caster EXPLICITEMENT chaque paramètre dans le IS NULL :
+     * ──────────────────────────────────────────────────────────
+     * AVANT : :keyword IS NULL        → PostgreSQL ne connaît pas le type
+     * APRÈS  : cast(:keyword as string) IS NULL   → PostgreSQL sait que c'est varchar
+     *
+     * AVANT : :createdFrom IS NULL    → PostgreSQL ne connaît pas le type
+     * APRÈS  : cast(:createdFrom as timestamp) IS NULL → PostgreSQL sait que c'est timestamp
+     *
+     * RÈGLE PAR TYPE DE PARAMÈTRE :
+     * ┌──────────────────┬─────────────────────────────────┐
+     * │ Type Java        │ Cast JPQL dans le IS NULL       │
+     * ├──────────────────┼─────────────────────────────────┤
+     * │ String           │ cast(:param as string)           │
+     * │ Enum             │ cast(:param as string)           │
+     * │ LocalDate        │ cast(:param as date)             │
+     * │ LocalDateTime    │ cast(:param as timestamp)        │
+     * └──────────────────┴─────────────────────────────────┘
+     *
+     * NOTE : Le cast est aussi appliqué dans le CONCAT('%', :keyword, '%')
+     * car Hibernate 6.6 + PostgreSQL interprète la concaténation
+     * avec un paramètre non-typé comme bytea au lieu de varchar.
      */
     @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
-            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
+            "AND (cast(:keyword as string) IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
             "OR LOWER(t.description) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%'))) " +
-            "AND (:userId IS NULL OR t.userId = :userId) " +
-            "AND (:assigneeId IS NULL OR t.assigneeId = :assigneeId) " +
-            "AND (:status IS NULL OR t.status = :status) " +
-            "AND (:priority IS NULL OR t.priority = :priority) " +
-            "AND (:dueDateFrom IS NULL OR t.dueDate >= :dueDateFrom) " +
-            "AND (:dueDateTo IS NULL OR t.dueDate <= :dueDateTo) " +
-            "AND (:createdFrom IS NULL OR t.createdAt >= :createdFrom) " +
-            "AND (:createdTo IS NULL OR t.createdAt <= :createdTo)")
+            "AND (cast(:userId as string) IS NULL OR t.userId = :userId) " +
+            "AND (cast(:assigneeId as string) IS NULL OR t.assigneeId = :assigneeId) " +
+            "AND (cast(:status as string) IS NULL OR t.status = :status) " +
+            "AND (cast(:priority as string) IS NULL OR t.priority = :priority) " +
+            "AND (cast(:dueDateFrom as date) IS NULL OR t.dueDate >= :dueDateFrom) " +
+            "AND (cast(:dueDateTo as date) IS NULL OR t.dueDate <= :dueDateTo) " +
+            "AND (cast(:createdFrom as timestamp) IS NULL OR t.createdAt >= :createdFrom) " +
+            "AND (cast(:createdTo as timestamp) IS NULL OR t.createdAt <= :createdTo)")
     Page<TaskEntity> searchTasks(
             @Param("keyword") String keyword,
             @Param("userId") String userId,
@@ -237,22 +247,21 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * → Les filtres additionnels (keyword, status, priority, etc.) restent
      *   identiques à searchTasks().
      *
-     * CORRECTION V6 — cast(:keyword as string) :
-     * Même correction que searchTasks() pour le bug lower(bytea).
-     * Voir la Javadoc de searchTasks() pour l'explication complète.
-     *
      * UTILISÉE PAR : TaskManager.searchTasks() pour USER
+     *
+     * NOTE : Même correction PostgreSQL+Hibernate 6.6 que searchTasks()
+     * → cast() obligatoire pour tous les IS NULL (voir commentaire ci-dessus)
      */
     @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
             "AND (t.userId = :username OR t.assigneeId = :username) " +
-            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
+            "AND (cast(:keyword as string) IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
             "OR LOWER(t.description) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%'))) " +
-            "AND (:status IS NULL OR t.status = :status) " +
-            "AND (:priority IS NULL OR t.priority = :priority) " +
-            "AND (:dueDateFrom IS NULL OR t.dueDate >= :dueDateFrom) " +
-            "AND (:dueDateTo IS NULL OR t.dueDate <= :dueDateTo) " +
-            "AND (:createdFrom IS NULL OR t.createdAt >= :createdFrom) " +
-            "AND (:createdTo IS NULL OR t.createdAt <= :createdTo)")
+            "AND (cast(:status as string) IS NULL OR t.status = :status) " +
+            "AND (cast(:priority as string) IS NULL OR t.priority = :priority) " +
+            "AND (cast(:dueDateFrom as date) IS NULL OR t.dueDate >= :dueDateFrom) " +
+            "AND (cast(:dueDateTo as date) IS NULL OR t.dueDate <= :dueDateTo) " +
+            "AND (cast(:createdFrom as timestamp) IS NULL OR t.createdAt >= :createdFrom) " +
+            "AND (cast(:createdTo as timestamp) IS NULL OR t.createdAt <= :createdTo)")
     Page<TaskEntity> searchTasksForUser(
             @Param("username") String username,
             @Param("keyword") String keyword,
