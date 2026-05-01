@@ -83,6 +83,26 @@ import java.util.Optional;
  * GET   /api/v1/iam/admin/users              → Lister tous les utilisateurs
  * PATCH /api/v1/iam/admin/users/{id}/role    → Changer le rôle
  * PATCH /api/v1/iam/admin/users/{id}/toggle  → Activer/désactiver
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION — ACCÈS MANAGER EN LECTURE SEULE
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ *   Le MANAGER a besoin de voir la liste des utilisateurs pour
+ *   pouvoir assigner des tâches. Mais getAllUsers() bloque tout
+ *   rôle non-ADMIN avec un 403 Forbidden.
+ *   → La liste d'assignation est vide côté frontend pour le MANAGER.
+ *
+ * SOLUTION :
+ *   getAllUsers() autorise ADMIN ET MANAGER en lecture seule.
+ *   Les endpoints de modification (role/toggle) restent ADMIN-only.
+ *
+ *   AVANT : if (!"ADMIN".equals(role))
+ *   APRÈS : if (!"ADMIN".equals(role) && !"MANAGER".equals(role))
+ *
+ *   Le MANAGER peut LIRE la liste (pour l'assignation de tâches)
+ *   mais ne peut NI changer les rôles NI activer/désactiver.
  */
 @Slf4j
 @RestController
@@ -111,17 +131,40 @@ public class AdminController {
      * GET /api/v1/iam/admin/users
      *
      * Liste tous les utilisateurs du système.
-     * ACCESSIBLE UNIQUEMENT AUX ADMINS (vérifié dans le code).
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * CORRECTION — ACCÈS MANAGER EN LECTURE SEULE
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * AVANT : Seul ADMIN pouvait lister les utilisateurs.
+     *   if (!"ADMIN".equals(role)) → 403 pour MANAGER
+     *   → La liste d'assignation de tâches était vide pour le MANAGER.
+     *
+     * APRÈS : ADMIN et MANAGER peuvent lister les utilisateurs.
+     *   if (!"ADMIN".equals(role) && !"MANAGER".equals(role)) → 403 pour USER uniquement
+     *   → Le MANAGER voit les utilisateurs pour l'assignation de tâches.
+     *   → Les endpoints de modification restent ADMIN-only.
+     *
+     * POURQUOI MANAGER ET PAS USER ?
+     *   Le rôle USER n'a pas besoin de lister les utilisateurs.
+     *   Seuls ADMIN (administration) et MANAGER (assignation de tâches)
+     *   ont besoin de cette fonctionnalité.
+     * ═══════════════════════════════════════════════════════════════════
      */
     @GetMapping("/users")
     public ResponseEntity<?> getAllUsers(Authentication authentication) {
         String role = extractRole(authentication);
-        if (!"ADMIN".equals(role)) {
+        // ═══════════════════════════════════════════════════════
+        // CORRECTION : Autoriser MANAGER en plus d'ADMIN
+        // AVANT : if (!"ADMIN".equals(role))
+        // APRÈS : if (!"ADMIN".equals(role) && !"MANAGER".equals(role))
+        // ═══════════════════════════════════════════════════════
+        if (!"ADMIN".equals(role) && !"MANAGER".equals(role)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of("message", "Accès réservé aux administrateurs"));
+                    .body(Map.of("message", "Accès réservé aux administrateurs et managers"));
         }
 
-        log.info("ADMIN : Liste des utilisateurs demandée par {}", authentication.getName());
+        log.info("{} : Liste des utilisateurs demandée par {}", role, authentication.getName());
         List<UserAdminResponse> users = userRepository.findAll().stream()
                 .map(UserAdminResponse::fromEntity)
                 .toList();
@@ -137,6 +180,8 @@ public class AdminController {
      * Rôles valides : USER, MANAGER, ADMIN
      *
      * AUDIT : Publie un UserAdminEvent(ROLE_CHANGED) capté par Core.
+     *
+     * ⚠️ ADMIN UNIQUEMENT — Le MANAGER ne peut pas changer les rôles.
      */
     @PatchMapping("/users/{userId}/role")
     public ResponseEntity<?> updateUserRole(
@@ -201,6 +246,8 @@ public class AdminController {
      * Si enabled=false → passe à true (activation)
      *
      * AUDIT : Publie un UserAdminEvent(USER_TOGGLED) capté par Core.
+     *
+     * ⚠️ ADMIN UNIQUEMENT — Le MANAGER ne peut pas activer/désactiver.
      */
     @PatchMapping("/users/{userId}/toggle")
     public ResponseEntity<?> toggleUserStatus(

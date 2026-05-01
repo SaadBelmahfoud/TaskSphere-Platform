@@ -28,9 +28,9 @@
 # ═══════════════════════════════════════════════════════════════════
 
 services:
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   # SERVICE 1 : PostgreSQL (Base de données)
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   postgres:
     image: postgres:16-alpine
     container_name: tasksphere-postgres
@@ -48,17 +48,34 @@ services:
       # Sans volume, les données sont perdues quand le conteneur est supprimé.
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # Vérifie que PostgreSQL est prêt à accepter des connexions
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tasksphere}"]
+      # ═══════════════════════════════════════════════════════
+      # CORRECTION — Ajout du flag -d pour vérifier la bonne base
+      # ═══════════════════════════════════════════════════════
+      #
+      # AVANT (bruit dans les logs) :
+      #   pg_isready -U ${DB_USERNAME:-tasksphere}
+      #   → pg_isready vérifie la base par défaut = nom de l'utilisateur
+      #   → Il cherche la base "tasksphere" (nom de l'utilisateur)
+      #   → Mais la vraie base est "taskspheredb" (POSTGRES_DB)
+      #   → FATAL: database "tasksphere" does not exist
+      #     toutes les 10 secondes dans les logs PostgreSQL
+      #
+      # APRÈS (correction) :
+      #   pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}
+      #   → pg_isready vérifie explicitement la base "taskspheredb"
+      #   → Plus de message FATAL dans les logs
+      #   → Le healthcheck fonctionne correctement
+      # ═══════════════════════════════════════════════════════
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - tasksphere-network
 
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   # SERVICE 2 : Backend Spring Boot
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   backend:
     build:
       context: .
@@ -87,7 +104,25 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}" ]
+      # ═══════════════════════════════════════════════════════
+      # CORRECTION — Healthcheck du backend avec curl (pas pg_isready)
+      # ═══════════════════════════════════════════════════════
+      #
+      # AVANT (incorrect) :
+      #   pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}
+      #   → pg_isready est un outil PostgreSQL, pas disponible dans
+      #     l'image Java du backend !
+      #   → Le healthcheck échoue silencieusement
+      #   → Docker peut marquer le conteneur unhealthy
+      #
+      # APRÈS (correction) :
+      #   curl -f http://localhost:8080/actuator/health
+      #   → Utilise l'endpoint Actuator de Spring Boot
+      #   → SecurityConfig autorise /actuator/health sans JWT (permitAll)
+      #   → curl est disponible dans l'image Java (ajouté via Dockerfile)
+      #   → Vrai healthcheck applicatif (pas juste vérification DB)
+      # ═══════════════════════════════════════════════════════
+      test: [ "CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -95,9 +130,9 @@ services:
     networks:
       - tasksphere-network
 
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   # SERVICE 3 : Frontend Next.js
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   # NOTE : Le frontend doit avoir un Dockerfile à la racine du repo
   # TaskSphere-Frontend. Pour l'activer :
   # 1. Clonez le repo frontend à côté de ce repo backend
@@ -138,9 +173,9 @@ services:
   #   networks:
   #     - tasksphere-network
 
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   # SERVICE 4 : Nginx — Reverse Proxy HTTPS (SPRINT 5)
-  # ═══════════════════════════════════════════════════════
+  # ═════════════════════════════════════════════════════════
   # PRINCIPE : Nginx agit comme reverse proxy avec SSL termination.
   # Le client se connecte en HTTPS → Nginx déchiffre → forward en HTTP
   # vers le backend Spring Boot. C'est le pattern standard en production.
@@ -169,18 +204,18 @@ services:
   #   networks:
   #     - tasksphere-network
 
-# ═══════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 # VOLUMES : Persistance des données
-# ═══════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 volumes:
   postgres_data:
   # Les données sont stockées dans un volume Docker nommé.
   # Elles persistent même si le conteneur PostgreSQL est recréé.
   # Pour supprimer les données : docker compose down -v
 
-# ═══════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 # RÉSEAUX : Communication entre les conteneurs
-# ═══════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 networks:
   tasksphere-network:
     driver: bridge
