@@ -57,6 +57,30 @@ import org.springframework.stereotype.Component;
  * - Sinon → utilise "password123" comme valeur par défaut
  * - NOTE : Spring convertit les variables d'env en propriétés en remplaçant les points par des underscores
  *   et en majuscules : init.user.password → INIT_USER_PASSWORD
+ *
+ * ====================================================================
+ * CORRECTION SPRINT 5 — Constructeur UserEntity à 11 arguments
+ * ====================================================================
+ *
+ * PROBLÈME :
+ *   UserEntity avait 9 champs avant Sprint 5. Sprint 5 a ajouté createdAt
+ *   et lastLogin pour correspondre aux colonnes Flyway V1.
+ *   L'annotation @AllArgsConstructor génère maintenant un constructeur
+ *   avec 11 paramètres, mais DataInitializer n'en passait que 9 :
+ *
+ *   AVANT (9 args) :
+ *     new UserEntity(null, username, email, encodedPassword, role,
+ *                     firstName, lastName, null, true)
+ *     → ERREUR COMPILATION : "no suitable constructor found"
+ *
+ *   APRÈS (11 args) :
+ *     new UserEntity(null, username, email, encodedPassword, role,
+ *                     firstName, lastName, null, true, null, null)
+ *     → id=null (auto-généré par @GeneratedValue)
+ *     → avatarUrl=null (optionnel)
+ *     → enabled=true (compte actif)
+ *     → createdAt=null (@PrePersist valorise automatiquement avant l'INSERT)
+ *     → lastLogin=null (jamais connecté)
  */
 @Slf4j
 @Component
@@ -125,9 +149,29 @@ public class DataInitializer implements CommandLineRunner {
                             String firstName, String lastName) {
         // Le mot de passe vient de la variable d'environnement (ou valeur par défaut)
         String encodedPassword = passwordEncoder.encode(defaultPassword);
+
+        // CORRECTION SPRINT 5 : Constructeur à 11 arguments
+        // ────────────────────────────────────────────────────
+        // L'annotation @AllArgsConstructor de UserEntity génère un constructeur
+        // avec TOUS les champs dans l'ordre de déclaration :
+        //   id, username, email, password, role, firstName, lastName,
+        //   avatarUrl, enabled, createdAt, lastLogin
+        //
+        // Arguments :
+        //   null             → id : auto-généré par @GeneratedValue(strategy = UUID)
+        //   username         → username
+        //   email            → email
+        //   encodedPassword  → password (hash BCrypt)
+        //   role             → role (USER, MANAGER, ADMIN)
+        //   firstName        → firstName
+        //   lastName         → lastName
+        //   null             → avatarUrl (optionnel, pas d'avatar par défaut)
+        //   true             → enabled (compte activé immédiatement)
+        //   null             → createdAt (valorisé par @PrePersist avant l'INSERT)
+        //   null             → lastLogin (jamais connecté, nullable)
         UserEntity user = new UserEntity(
                 null, username, email, encodedPassword, role,
-                firstName, lastName, null, true
+                firstName, lastName, null, true, null, null
         );
         userRepository.save(user);
     }

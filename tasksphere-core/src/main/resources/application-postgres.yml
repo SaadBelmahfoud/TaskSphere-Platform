@@ -1,0 +1,165 @@
+# ═══════════════════════════════════════════════════════════════════
+# PROFIL POSTGRESQL — Configuration pour la production
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRINCIPE DES PROFILS SPRING :
+# ──────────────────────────────
+# Spring Boot supporte plusieurs profils qui surchargent la config par défaut.
+# - application.yaml : config de base (H2 en dev)
+# - application-postgres.yml : surcharge pour PostgreSQL
+# - application-test.yml : surcharge pour les tests
+#
+# Pour activer un profil :
+#   java -jar app.jar --spring.profiles.active=postgres
+#   ou variable d'environnement : SPRING_PROFILES_ACTIVE=postgres
+#
+# PRINCIPE DES VARIABLES D'ENVIRONNEMENT :
+# ──────────────────────────────────────────
+# Les identifiants de la base de données NE DOIVENT JAMAIS être codés en dur.
+# On utilise ${VAR:default} : si VAR existe → utilise sa valeur, sinon → default.
+# Spring convertit les noms : SPRING_DATASOURCE_URL → spring.datasource.url
+#
+# SÉCURITÉ EN PRODUCTION :
+# ────────────────────────
+# - Le mot de passe DOIT être dans une variable d'environnement
+# - La connexion DOIT utiliser SSL (sslmode=require)
+# - Le pool de connexions DOIT être configuré (HikariCP par défaut)
+
+spring:
+  datasource:
+    # ═══════════════════════════════════════════════════════
+    # URL JDBC PostgreSQL
+    # ═══════════════════════════════════════════════════════
+    # Format : jdbc:postgresql://<host>:<port>/<database>
+    # - host : localhost en dev, postgres (nom du conteneur) en Docker
+    # - port : 5432 (port par défaut de PostgreSQL)
+    # - database : taskspheredb (nom de la base)
+    # - sslmode : chiffrement SSL (disable en dev, require en prod)
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:taskspheredb}?sslmode=${DB_SSL_MODE:disable}
+    username: ${DB_USERNAME:tasksphere}
+    password: ${DB_PASSWORD:tasksphere123}
+    driver-class-name: org.postgresql.Driver
+
+    # ═══════════════════════════════════════════════════════
+    # HIKARI CP — Pool de connexions
+    # ═══════════════════════════════════════════════════════
+    # PRINCIPE : Créer une connexion TCP à PostgreSQL est COUTEUX
+    # (~50ms pour le handshake TCP + SSL + auth). HikariCP maintient
+    # un "pool" de connexions déjà établies et les réutilise.
+    #
+    # ┌────────────┐     ┌──────────────────────────────┐
+    # │ Application│ ──→ │ HikariCP Pool                │
+    # │ (requete)  │ ←── │ [conn1] [conn2] ... [conn10] │──→ PostgreSQL
+    # └────────────┘     └──────────────────────────────┘
+    hikari:
+      maximum-pool-size: 10      # Max 10 connexions simultanées
+      minimum-idle: 5            # Min 5 connexions inactives gardées ouvertes
+      idle-timeout: 300000       # 5 min avant fermeture d'une connexion inactive
+      connection-timeout: 20000  # 20s max pour obtenir une connexion du pool
+      max-lifetime: 1200000      # 20 min de durée de vie max par connexion
+
+  # JPA / HIBERNATE — Mode VALIDATE en production
+  # ─────────────────────────────────────────────────
+  # validate : Hibernate vérifie que les tables correspondent aux entités.
+  # Il NE modifie PAS le schéma. C'est Flyway qui gère les migrations.
+  # Si une table/colonne manque → l'application ne démarre PAS.
+  # C'est le comportement souhaité : on veut être alerté d'un problème.
+  jpa:
+    hibernate:
+      ddl-auto: validate    # ← PRODUCTION : vérifie seulement, ne modifie pas
+    show-sql: false         # ← PRODUCTION : pas de logs SQL (performance)
+    open-in-view: false     # ← IMPORTANT : pas de lazy loading hors transaction
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect  # Dialecte SQL PostgreSQL
+        format_sql: true     # SQL formaté dans les logs (si show-sql=true)
+
+  # DÉSACTIVER H2 en production
+  h2:
+    console:
+      enabled: false
+
+  # ═══════════════════════════════════════════════════════════════════
+  # FLYWAY — Migrations de base de données versionnées
+  # ═══════════════════════════════════════════════════════════════════
+  # PRINCIPE : Flyway exécute les scripts SQL dans l'ordre de version.
+  # Chaque migration a un numéro de version (V1, V2, V3...).
+  # Flyway trace les migrations déjà exécutées dans la table
+  # "flyway_schema_history". Une migration déjà exécutée n'est JAMAIS
+  # rejouée (sauf si on utilise repair).
+  #
+  # ┌───────────────────────────────────────────────────────┐
+  # │ flyway_schema_history                                 │
+  # │ ─────────────────────                                 │
+  # │ installed_rank | version | description | script | ... │
+  # │ 1              | 1       | Create IAM  | V1__... |    │
+  # │ 2              | 2       | Create Core | V2__... |    │
+  # └───────────────────────────────────────────────────────┘
+  flyway:
+    enabled: true
+    # baseline-on-migrate : crée la table flyway_schema_history si elle n'existe pas
+    baseline-on-migrate: true
+    # Emplacement des scripts SQL (classpath:db/migration)
+    locations: classpath:db/migration
+    # Encodage des scripts SQL
+    encoding: UTF-8
+
+# JWT : Clé secrète OBLIGATOIREMENT via variable d'environnement en production
+jwt:
+  secret: ${JWT_SECRET}    # ← PAS de valeur par défaut en production !
+
+# Mot de passe de l'utilisateur initial
+init:
+  user:
+    password: ${INIT_USER_PASSWORD:password123}
+
+# ═══════════════════════════════════════════════════════════════════
+# CORS — Origines autorisées (configurable via variable d'environnement)
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 5 : Origines CORS configurables pour la production.
+# En dev : http://localhost:3000
+# En prod : https://tasksphere.example.com
+# Multi-origines : séparer par des virgules
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
+# ═══════════════════════════════════════════════════════════════════
+# HTTPS / SSL — Chiffrement des communications
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 5 : Support HTTPS pour la production.
+#
+# DEUX APPROCHES POSSIBLES :
+# ──────────────────────────
+# 1. REVERSE PROXY (recommandé) :
+#    Spring Boot tourne en HTTP interne, un nginx/Caddy gère le SSL.
+#    → Pas besoin de configurer server.ssl ci-dessous
+#    → Le reverse proxy fait SSL termination
+#
+# 2. SSL DIRECT Spring Boot :
+#    Spring Boot gère lui-même le HTTPS avec un keystore PKCS12.
+#    → Activer avec SSL_ENABLED=true
+#    → Fournir le keystore via SSL_KEYSTORE_PATH et SSL_KEYSTORE_PASSWORD
+#    → Générer un keystore dev : voir scripts/generate-keystore.sh
+#
+# EN DÉFAUT : SSL désactivé (mode reverse proxy ou dev)
+server:
+  port: 8080
+  ssl:
+    enabled: ${SSL_ENABLED:false}
+    # Chemin vers le keystore PKCS12 (relatif ou absolu)
+    key-store: ${SSL_KEYSTORE_PATH:}
+    key-store-password: ${SSL_KEYSTORE_PASSWORD:}
+    key-store-type: PKCS12
+    key-alias: ${SSL_KEY_ALIAS:tasksphere}
+
+# Actuator en mode PRODUCTION : endpoints limités
+management:
+  endpoints:
+    web:
+      exposure:
+        # En production : seulement health et info (sécurité !)
+        include: health,info
+  endpoint:
+    health:
+      # Montrer les détails seulement aux requêtes authentifiées
+      show-details: when-authorized

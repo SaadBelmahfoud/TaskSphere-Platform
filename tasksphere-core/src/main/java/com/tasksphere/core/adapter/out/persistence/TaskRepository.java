@@ -39,6 +39,32 @@ import java.util.Optional;
  * searchTasks() utilise un @Query avec des conditions
  * dynamiques (:param IS NULL OR ...) pour filtrer
  * uniquement les paramètres non-null.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION — PRÉCÉDENCE DES OPÉRATEURS DANS LES MÉTHODES DÉRIVÉES
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ *   La méthode dérivée findByUserIdOrAssigneeIdAndDeletedAtIsNull
+ *   est interprétée par Spring Data comme :
+ *     WHERE userId = ?1 OR (assigneeId = ?2 AND deletedAt IS NULL)
+ *
+ *   Au lieu du SQL voulu :
+ *     WHERE (userId = ?1 OR assigneeId = ?2) AND deletedAt IS NULL
+ *
+ *   CAUSE : Dans Spring Data JPA, l'opérateur "And" a une
+ *   précédence PLUS ÉLEVÉE que "Or" (comme en math : * avant +).
+ *   Donc "A Or B And C" est parsé comme "A Or (B And C)".
+ *
+ *   CONSÉQUENCE : Les tâches créées par l'utilisateur mais
+ *   soft-deleted (deletedAt ≠ null) étaient RETOURNÉES car
+ *   le filtre deletedAt IS NULL ne s'appliquait qu'à assigneeId !
+ *
+ * SOLUTION :
+ *   Remplacer la méthode dérivée par un @Query JPQL explicite
+ *   avec des PARENTHÈSES pour forcer la bonne précédence :
+ *     WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
+ *       AND t.deletedAt IS NULL
  */
 @Repository
 public interface TaskRepository extends JpaRepository<TaskEntity, String> {
@@ -93,27 +119,38 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
 
     /**
      * ═══════════════════════════════════════════════════════════
-     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
+     * CORRECTION — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
      * ═══════════════════════════════════════════════════════════
      *
-     * PROBLÈME AVANT :
-     * findByUserIdAndDeletedAtIsNullOrderByCreatedAtDesc() ne cherche QUE
-     * les tâches dont l'utilisateur est propriétaire. Les tâches assignées
-     * à cet utilisateur n'apparaissent PAS dans sa liste.
+     * PROBLÈME AVANT (méthode dérivée) :
+     * findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc
+     * → Spring Data interprète : userId = ? OR (assigneeId = ? AND deletedAt IS NULL)
+     * → Le filtre deletedAt IS NULL ne s'applique PAS au userId !
+     * → Les tâches soft-deleted de l'utilisateur étaient retournées si userId matchait
      *
-     * SOLUTION :
-     * Utiliser (t.userId = :username OR t.assigneeId = :username) pour
-     * retourner les tâches où l'utilisateur est créateur OU assignataire.
+     * APRÈS (correction avec @Query explicite) :
+     * WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
+     *   AND t.deletedAt IS NULL
+     * → Le filtre deletedAt IS NULL s'applique AUX DEUX conditions
+     * → Les tâches soft-deleted sont correctement exclues
      *
-     * PRINCIPE — OR logique dans la clause WHERE :
-     * Si l'utilisateur a créé la tâche → userId match → trouvé
-     * Si l'utilisateur est assignataire → assigneeId match → trouvé
-     * Si aucun des deux → pas trouvé
+     * PRINCIPE — PRÉCÉDENCE DES OPÉRATEURS :
+     * En Spring Data JPA, "And" a priorité sur "Or" :
+     *   A Or B And C  →  A Or (B And C)   ← COMPORTEMENT PAR DÉFAUT
+     *   (A Or B) And C                     ← CE QU'ON VEUT
+     *
+     * SOLUTION : Utiliser un @Query JPQL avec des PARENTHÈSES explicites.
      *
      * UTILISÉE PAR : TaskManager.getMyTasks(), TaskPersistenceAdapter
      */
-    Page<TaskEntity> findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc(
-            String userId, String assigneeId, Pageable pageable);
+    @Query("SELECT t FROM TaskEntity t " +
+            "WHERE (t.userId = :userId OR t.assigneeId = :assigneeId) " +
+            "AND t.deletedAt IS NULL " +
+            "ORDER BY t.createdAt DESC")
+    Page<TaskEntity> findByUserIsOwnerOrAssignee(
+            @Param("userId") String userId,
+            @Param("assigneeId") String assigneeId,
+            Pageable pageable);
 
     /**
      * ═══════════════════════════════════════════════════════════
@@ -131,7 +168,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *                OR LOWER(title) LIKE '%urgence%'        → évalué
      *                OR LOWER(description) LIKE '%urgence%') → évalué)
      *         AND (NULL IS NULL                    → TRUE
-     *                OR t.status = NULL)            → ignoré
+     *                OR t.status = NULL)            → ignoré)
      *
      * → Résultat : filtre sur keyword uniquement !
      *
@@ -149,18 +186,49 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *
      * PAGINATION : Spring Data Pageable gère automatiquement
      * le LIMIT/OFFSET via page et size.
+     *
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION BUG POSTGRESQL + HIBERNATE 6.6 — cast() obligatoire
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME : Hibernate 6.6 utilise setObject() au lieu de setString()
+     * pour binder les paramètres JPQL. Quand un paramètre est null,
+     * PostgreSQL ne peut pas déterminer son type dans "? IS NULL".
+     * → ERROR: could not determine data type of parameter $N
+     *
+     * SOLUTION : Caster EXPLICITEMENT chaque paramètre dans le IS NULL :
+     * ──────────────────────────────────────────────────────────
+     * AVANT : :keyword IS NULL        → PostgreSQL ne connaît pas le type
+     * APRÈS  : cast(:keyword as string) IS NULL   → PostgreSQL sait que c'est varchar
+     *
+     * AVANT : :createdFrom IS NULL    → PostgreSQL ne connaît pas le type
+     * APRÈS  : cast(:createdFrom as timestamp) IS NULL → PostgreSQL sait que c'est timestamp
+     *
+     * RÈGLE PAR TYPE DE PARAMÈTRE :
+     * ┌──────────────────┬─────────────────────────────────┐
+     * │ Type Java        │ Cast JPQL dans le IS NULL       │
+     * ├──────────────────┼─────────────────────────────────┤
+     * │ String           │ cast(:param as string)           │
+     * │ Enum             │ cast(:param as string)           │
+     * │ LocalDate        │ cast(:param as date)             │
+     * │ LocalDateTime    │ cast(:param as timestamp)        │
+     * └──────────────────┴─────────────────────────────────┘
+     *
+     * NOTE : Le cast est aussi appliqué dans le CONCAT('%', :keyword, '%')
+     * car Hibernate 6.6 + PostgreSQL interprète la concaténation
+     * avec un paramètre non-typé comme bytea au lieu de varchar.
      */
     @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
-            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
-            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
-            "AND (:userId IS NULL OR t.userId = :userId) " +
-            "AND (:assigneeId IS NULL OR t.assigneeId = :assigneeId) " +
-            "AND (:status IS NULL OR t.status = :status) " +
-            "AND (:priority IS NULL OR t.priority = :priority) " +
-            "AND (:dueDateFrom IS NULL OR t.dueDate >= :dueDateFrom) " +
-            "AND (:dueDateTo IS NULL OR t.dueDate <= :dueDateTo) " +
-            "AND (:createdFrom IS NULL OR t.createdAt >= :createdFrom) " +
-            "AND (:createdTo IS NULL OR t.createdAt <= :createdTo)")
+            "AND (cast(:keyword as string) IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
+            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%'))) " +
+            "AND (cast(:userId as string) IS NULL OR t.userId = :userId) " +
+            "AND (cast(:assigneeId as string) IS NULL OR t.assigneeId = :assigneeId) " +
+            "AND (cast(:status as string) IS NULL OR t.status = :status) " +
+            "AND (cast(:priority as string) IS NULL OR t.priority = :priority) " +
+            "AND (cast(:dueDateFrom as date) IS NULL OR t.dueDate >= :dueDateFrom) " +
+            "AND (cast(:dueDateTo as date) IS NULL OR t.dueDate <= :dueDateTo) " +
+            "AND (cast(:createdFrom as timestamp) IS NULL OR t.createdAt >= :createdFrom) " +
+            "AND (cast(:createdTo as timestamp) IS NULL OR t.createdAt <= :createdTo)")
     Page<TaskEntity> searchTasks(
             @Param("keyword") String keyword,
             @Param("userId") String userId,
@@ -217,17 +285,20 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *   identiques à searchTasks().
      *
      * UTILISÉE PAR : TaskManager.searchTasks() pour USER
+     *
+     * NOTE : Même correction PostgreSQL+Hibernate 6.6 que searchTasks()
+     * → cast() obligatoire pour tous les IS NULL (voir commentaire ci-dessus)
      */
     @Query("SELECT t FROM TaskEntity t WHERE t.deletedAt IS NULL " +
             "AND (t.userId = :username OR t.assigneeId = :username) " +
-            "AND (:keyword IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
-            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
-            "AND (:status IS NULL OR t.status = :status) " +
-            "AND (:priority IS NULL OR t.priority = :priority) " +
-            "AND (:dueDateFrom IS NULL OR t.dueDate >= :dueDateFrom) " +
-            "AND (:dueDateTo IS NULL OR t.dueDate <= :dueDateTo) " +
-            "AND (:createdFrom IS NULL OR t.createdAt >= :createdFrom) " +
-            "AND (:createdTo IS NULL OR t.createdAt <= :createdTo)")
+            "AND (cast(:keyword as string) IS NULL OR LOWER(t.title) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%')) " +
+            "OR LOWER(t.description) LIKE LOWER(CONCAT('%', cast(:keyword as string), '%'))) " +
+            "AND (cast(:status as string) IS NULL OR t.status = :status) " +
+            "AND (cast(:priority as string) IS NULL OR t.priority = :priority) " +
+            "AND (cast(:dueDateFrom as date) IS NULL OR t.dueDate >= :dueDateFrom) " +
+            "AND (cast(:dueDateTo as date) IS NULL OR t.dueDate <= :dueDateTo) " +
+            "AND (cast(:createdFrom as timestamp) IS NULL OR t.createdAt >= :createdFrom) " +
+            "AND (cast(:createdTo as timestamp) IS NULL OR t.createdAt <= :createdTo)")
     Page<TaskEntity> searchTasksForUser(
             @Param("username") String username,
             @Param("keyword") String keyword,
@@ -469,7 +540,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * SQL :
      * SELECT COUNT(t) FROM tasks t
      * WHERE t.deleted_at IS NULL
-     *   AND t.createdAt >= :after
+     *   AND t.created_at >= :after
      *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
      *
      * NOTE : completedAt est null pour les tâches non terminées.
@@ -489,7 +560,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * SQL :
      * SELECT COUNT(t) FROM tasks t
      * WHERE t.deleted_at IS NULL
-     *   AND t.completedAt >= :after
+     *   AND t.completed_at >= :after
      *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
      *
      * NOTE : completedAt est non-null UNIQUEMENT quand status = DONE.

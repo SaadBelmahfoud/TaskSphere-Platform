@@ -1,3 +1,36 @@
 #Intellij
 .idea/
 .iml
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 5 : Variables d'environnement et secrets
+# ═══════════════════════════════════════════════════════════════════
+# Le fichier .env contient des secrets (mots de passe, clés JWT).
+# Il NE DOIT JAMAIS être commité dans Git (OWASP Top 10 : Sensitive Data Exposure).
+# En production, utiliser Docker secrets, HashiCorp Vault ou un gestionnaire de secrets.
+# ═══════════════════════════════════════════════════════════════════
+.env
+.env.*
+
+# Maven
+target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ═══════════════════════════════════════════
+# ENVIRONNEMENT & SECRETS (SPRINT 5)
+# ═══════════════════════════════════════════
+# .env contient des mots de passe et clés secrètes.
+# Il NE DOIT JAMAIS être commité dans Git.
+.env
+.env.*
+
+# Certificats SSL (clés privées)
+nginx/ssl/*.key
+nginx/ssl/*.p12
+
+# Keystore Spring Boot
+*.p12
+*.jks

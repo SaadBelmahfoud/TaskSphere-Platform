@@ -45,6 +45,16 @@ import java.time.LocalDateTime;
  * NE le persiste PAS en base de données. C'est un champ technique
  * qui existe uniquement en mémoire pour indiquer à Spring Data JPA
  * s'il faut faire un INSERT ou un UPDATE.
+ *
+ * CORRECTION V6 — columnDefinition explicite pour PostgreSQL
+ * ──────────────────────────────────────────────────────────
+ * PROBLÈME : Sans columnDefinition, Hibernate avec ddl-auto=update
+ * peut mapper String en bytea sous PostgreSQL au lieu de VARCHAR/TEXT.
+ * Cela provoque l'erreur : function lower(bytea) does not exist
+ *
+ * SOLUTION : Ajouter columnDefinition = "VARCHAR(255)" pour title
+ * et columnDefinition = "TEXT" pour description, pour forcer
+ * Hibernate à utiliser les bons types SQL.
  */
 @Entity
 @Table(name = "tasks")
@@ -54,9 +64,29 @@ public class TaskEntity implements Persistable<String> {
     @Column(length = 36)
     private String id;
 
-    @Column(nullable = false, length = 255)
+    /**
+     * CORRECTION V6 : columnDefinition explicite
+     * ────────────────────────────────────────────
+     * AVANT : @Column(nullable = false, length = 255)
+     *   → Hibernate peut mapper en bytea sous PostgreSQL
+     *   → LOWER(title) échoue avec "function lower(bytea) does not exist"
+     *
+     * APRÈS : @Column(nullable = false, columnDefinition = "VARCHAR(255)")
+     *   → Force Hibernate à utiliser VARCHAR(255) explicitement
+     *   → LOWER(title) fonctionne correctement avec PostgreSQL
+     */
+    @Column(nullable = false, columnDefinition = "VARCHAR(255)")   // ← CORRECTION V6
     private String title;
 
+    /**
+     * CORRECTION V6 : columnDefinition explicite
+     * ────────────────────────────────────────────
+     * AVANT : @Column(columnDefinition = "TEXT")
+     *   → Déjà correct, mais on garde pour être explicite
+     *
+     * APRÈS : Pas de changement nécessaire, TEXT est déjà le bon type.
+     * On conserve columnDefinition = "TEXT" pour la cohérence.
+     */
     @Column(columnDefinition = "TEXT")
     private String description;
 

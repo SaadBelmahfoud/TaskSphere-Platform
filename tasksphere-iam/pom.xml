@@ -35,9 +35,28 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+
+        <!-- ===== Base de données : H2 (DEV uniquement) ===== -->
+        <!-- Scope "test" : H2 n'est disponible QUE dans les tests.
+             En production, on utilise PostgreSQL. Même si le module IAM n'a pas
+             sa propre config, le driver PostgreSQL doit être présent car les
+             entités IAM (UserEntity, RefreshTokenEntity) sont scannées par
+             l'application Core au démarrage. -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ===== AJOUT SPRINT 5 : PostgreSQL JDBC Driver ===== -->
+        <!-- PRINCIPE : Le driver JDBC permet à Java de communiquer avec PostgreSQL.
+             Même si le module IAM n'a pas sa propre configuration YAML, les entités
+             JPA (UserEntity, RefreshTokenEntity) sont scannées par le module Core
+             au démarrage via @EntityScan. Hibernate a donc besoin du driver PostgreSQL
+             pour valider les tables iam_users et refresh_tokens. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 

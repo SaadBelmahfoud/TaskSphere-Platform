@@ -23,6 +23,21 @@ import java.time.LocalDateTime;
  * @NoArgsConstructor → génère un constructeur vide (requis par JPA/Hibernate)
  * @AllArgsConstructor → génère un constructeur avec tous les champs
  * @Builder → génère un pattern Builder pour une construction fluide de l'objet
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION SPRINT 5 : @Column(length = 36) sur l'ID
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ *   Sans @Column(length = 36), Hibernate suppose que l'ID est VARCHAR(255).
+ *   Or la migration Flyway V2 crée la colonne id en VARCHAR(36).
+ *   Avec ddl-auto: validate, Hibernate compare le schéma attendu (255)
+ *   avec le schéma réel (36) → SchemaValidationException → CRASH au démarrage.
+ *
+ * SOLUTION :
+ *   Ajouter @Column(length = 36) pour que Hibernate attende VARCHAR(36),
+ *   cohérent avec le script Flyway V2 et les autres entités (UserEntity,
+ *   TaskEntity, CommentEntity, ActivityLogEntity qui ont toutes cette annotation).
  */
 @Entity
 @Table(name = "refresh_tokens")
@@ -35,6 +50,7 @@ public class RefreshTokenEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
+    @Column(length = 36)  // ← CORRECTION SPRINT 5 : Cohérent avec Flyway V2 (VARCHAR(36))
     private String id;
 
     /**

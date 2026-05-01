@@ -1,0 +1,221 @@
+# ═══════════════════════════════════════════════════════════════════
+# DOCKER COMPOSE — Orchestration des conteneurs TaskSphere
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRINCIPE : docker-compose démarre et relie PLUSIEURS conteneurs.
+# Chaque "service" est un conteneur avec sa propre configuration.
+# Les conteneurs peuvent communiquer via un réseau Docker interne.
+#
+# ARCHITECTURE :
+# ┌──────────────────────────────────────────────────────────┐
+# │ Docker Network: tasksphere-network                       │
+# │                                                          │
+# │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────┐ │
+# │  │ frontend │ → │  nginx   │ → │ backend  │ → │postgres│ │
+# │  │ :3000    │   │ :80/443  │   │ :8080    │   │ :5432 │ │
+# │  └──────────┘   └──────────┘   └──────────┘   └──────┘ │
+# │                                                          │
+# │  HTTPS : nginx gère le SSL (reverse proxy)               │
+# │  Les conteneurs internes communiquent en HTTP            │
+# └──────────────────────────────────────────────────────────┘
+#
+# COMMANDES :
+#   docker compose up -d          → Démarrer tous les services
+#   docker compose down           → Arrêter tous les services
+#   docker compose logs -f backend → Voir les logs du backend
+#   docker compose ps             → Statut des services
+#
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  # ═════════════════════════════════════════════════════════
+  # SERVICE 1 : PostgreSQL (Base de données)
+  # ═════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: tasksphere-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-taskspheredb}
+      POSTGRES_USER: ${DB_USERNAME:-tasksphere}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+    ports:
+      # Port exposé sur l'hôte : port interne du conteneur
+      # Utile pour accéder à la base avec pgAdmin ou DBeaver
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      # VOLUME : Les données PostgreSQL persistent entre les redémarrages.
+      # Sans volume, les données sont perdues quand le conteneur est supprimé.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # ═══════════════════════════════════════════════════════
+      # CORRECTION — Ajout du flag -d pour vérifier la bonne base
+      # ═══════════════════════════════════════════════════════
+      #
+      # AVANT (bruit dans les logs) :
+      #   pg_isready -U ${DB_USERNAME:-tasksphere}
+      #   → pg_isready vérifie la base par défaut = nom de l'utilisateur
+      #   → Il cherche la base "tasksphere" (nom de l'utilisateur)
+      #   → Mais la vraie base est "taskspheredb" (POSTGRES_DB)
+      #   → FATAL: database "tasksphere" does not exist
+      #     toutes les 10 secondes dans les logs PostgreSQL
+      #
+      # APRÈS (correction) :
+      #   pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}
+      #   → pg_isready vérifie explicitement la base "taskspheredb"
+      #   → Plus de message FATAL dans les logs
+      #   → Le healthcheck fonctionne correctement
+      # ═══════════════════════════════════════════════════════
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tasksphere-network
+
+  # ═════════════════════════════════════════════════════════
+  # SERVICE 2 : Backend Spring Boot
+  # ═════════════════════════════════════════════════════════
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tasksphere-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    environment:
+      # Profil Spring : active la configuration PostgreSQL
+      SPRING_PROFILES_ACTIVE: postgres
+      # Connexion à PostgreSQL (utilise le nom du service "postgres" comme hostname)
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-taskspheredb}
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-tasksphere}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+      # SPRINT 5 : DB_HOST pour le profil postgres (utilisé par application-postgres.yml)
+      DB_HOST: postgres
+      # Clé secrète JWT (OBLIGATOIRE en production !)
+      JWT_SECRET: ${JWT_SECRET:-tasksphere-prod-secret-key-change-me-in-production-256bits}
+      # Mot de passe de l'utilisateur initial
+      INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:-password123}
+      # SPRINT 5 : CORS — Origines autorisées
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,https://localhost:443}
+    depends_on:
+      # Le backend attend que PostgreSQL soit prêt avant de démarrer
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # ═══════════════════════════════════════════════════════
+      # CORRECTION — Healthcheck du backend avec curl (pas pg_isready)
+      # ═══════════════════════════════════════════════════════
+      #
+      # AVANT (incorrect) :
+      #   pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}
+      #   → pg_isready est un outil PostgreSQL, pas disponible dans
+      #     l'image Java du backend !
+      #   → Le healthcheck échoue silencieusement
+      #   → Docker peut marquer le conteneur unhealthy
+      #
+      # APRÈS (correction) :
+      #   curl -f http://localhost:8080/actuator/health
+      #   → Utilise l'endpoint Actuator de Spring Boot
+      #   → SecurityConfig autorise /actuator/health sans JWT (permitAll)
+      #   → curl est disponible dans l'image Java (ajouté via Dockerfile)
+      #   → Vrai healthcheck applicatif (pas juste vérification DB)
+      # ═══════════════════════════════════════════════════════
+      test: [ "CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - tasksphere-network
+
+  # ═════════════════════════════════════════════════════════
+  # SERVICE 3 : Frontend Next.js
+  # ═════════════════════════════════════════════════════════
+  # NOTE : Le frontend doit avoir un Dockerfile à la racine du repo
+  # TaskSphere-Frontend. Pour l'activer :
+  # 1. Clonez le repo frontend à côté de ce repo backend
+  # 2. Créez un Dockerfile dans le repo frontend (voir exemple ci-dessous)
+  # 3. Décommentez ce bloc
+  # 4. Lancez docker compose up -d
+  #
+  # EXEMPLE DE Dockerfile POUR LE FRONTEND (à créer dans TaskSphere-Frontend/) :
+  # ────────────────────────────────────────────────────────────────
+  # FROM node:20-alpine AS build
+  # WORKDIR /app
+  # COPY package.json bun.lockb ./
+  # RUN npm install -g bun && bun install
+  # COPY . .
+  # RUN bun run build
+  # FROM node:20-alpine
+  # WORKDIR /app
+  # COPY --from=build /app/.next ./.next
+  # COPY --from=build /app/node_modules ./node_modules
+  # COPY --from=build /app/package.json ./
+  # COPY --from=build /app/public ./public
+  # EXPOSE 3000
+  # CMD ["npm", "start"]
+  #
+  # frontend:
+  #   build:
+  #     context: ../TaskSphere-Frontend
+  #     dockerfile: Dockerfile
+  #   container_name: tasksphere-frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${FRONTEND_PORT:-3000}:3000"
+  #   environment:
+  #     NEXT_PUBLIC_API_URL: http://backend:8080
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   networks:
+  #     - tasksphere-network
+
+  # ═════════════════════════════════════════════════════════
+  # SERVICE 4 : Nginx — Reverse Proxy HTTPS (SPRINT 5)
+  # ═════════════════════════════════════════════════════════
+  # PRINCIPE : Nginx agit comme reverse proxy avec SSL termination.
+  # Le client se connecte en HTTPS → Nginx déchiffre → forward en HTTP
+  # vers le backend Spring Boot. C'est le pattern standard en production.
+  #
+  # AVANT (sans Nginx) : Client ──HTTP──→ Spring Boot
+  # APRÈS (avec Nginx) : Client ──HTTPS──→ Nginx ──HTTP──→ Spring Boot
+  #
+  # Pour activer HTTPS :
+  # 1. Générer les certificats : bash nginx/ssl/generate-cert.sh
+  # 2. Décommenter ce bloc
+  # 3. docker compose up -d
+  #
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: tasksphere-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"      # HTTP (redirect vers HTTPS)
+  #     - "443:443"    # HTTPS
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/ssl:/etc/nginx/ssl:ro
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   networks:
+  #     - tasksphere-network
+
+# ═════════════════════════════════════════════════════════
+# VOLUMES : Persistance des données
+# ═════════════════════════════════════════════════════════
+volumes:
+  postgres_data:
+  # Les données sont stockées dans un volume Docker nommé.
+  # Elles persistent même si le conteneur PostgreSQL est recréé.
+  # Pour supprimer les données : docker compose down -v
+
+# ═════════════════════════════════════════════════════════
+# RÉSEAUX : Communication entre les conteneurs
+# ═════════════════════════════════════════════════════════
+networks:
+  tasksphere-network:
+    driver: bridge

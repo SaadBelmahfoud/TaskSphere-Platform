@@ -1,0 +1,48 @@
+# ═══════════════════════════════════════════════════════
+# DOCKER IGNORE — Exclure les fichiers inutiles du build
+# ═══════════════════════════════════════════════════════
+# PRINCIPE : Comme .gitignore, mais pour le Docker build context.
+# Les fichiers/dossiers listés ci-dessous NE seront PAS envoyés
+# au daemon Docker lors du "docker build". Cela :
+# - Accélère le build (moins de fichiers à transférer)
+# - Réduit la taille de l'image (pas de fichiers inutiles)
+# - Améliore la sécurité (pas de secrets dans l'image)
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+*.iml
+.vscode
+.settings
+.classpath
+.project
+
+# Build output (sera reconstruit dans le conteneur)
+**/target/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env
+.env.*
+
+# Docker files (pas besoin de les copier dans l'image)
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Nginx (pas nécessaire dans l'image Spring Boot)
+nginx/
+
+# Logs
+*.log
+logs/
