@@ -87,7 +87,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}" ]
       interval: 30s
       timeout: 5s
       retries: 3
