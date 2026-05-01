@@ -39,6 +39,32 @@ import java.util.Optional;
  * searchTasks() utilise un @Query avec des conditions
  * dynamiques (:param IS NULL OR ...) pour filtrer
  * uniquement les paramètres non-null.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION — PRÉCÉDENCE DES OPÉRATEURS DANS LES MÉTHODES DÉRIVÉES
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ *   La méthode dérivée findByUserIdOrAssigneeIdAndDeletedAtIsNull
+ *   est interprétée par Spring Data comme :
+ *     WHERE userId = ?1 OR (assigneeId = ?2 AND deletedAt IS NULL)
+ *
+ *   Au lieu du SQL voulu :
+ *     WHERE (userId = ?1 OR assigneeId = ?2) AND deletedAt IS NULL
+ *
+ *   CAUSE : Dans Spring Data JPA, l'opérateur "And" a une
+ *   précédence PLUS ÉLEVÉE que "Or" (comme en math : * avant +).
+ *   Donc "A Or B And C" est parsé comme "A Or (B And C)".
+ *
+ *   CONSÉQUENCE : Les tâches créées par l'utilisateur mais
+ *   soft-deleted (deletedAt ≠ null) étaient RETOURNÉES car
+ *   le filtre deletedAt IS NULL ne s'appliquait qu'à assigneeId !
+ *
+ * SOLUTION :
+ *   Remplacer la méthode dérivée par un @Query JPQL explicite
+ *   avec des PARENTHÈSES pour forcer la bonne précédence :
+ *     WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
+ *       AND t.deletedAt IS NULL
  */
 @Repository
 public interface TaskRepository extends JpaRepository<TaskEntity, String> {
@@ -93,27 +119,38 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
 
     /**
      * ═══════════════════════════════════════════════════════════
-     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
+     * CORRECTION — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
      * ═══════════════════════════════════════════════════════════
      *
-     * PROBLÈME AVANT :
-     * findByUserIdAndDeletedAtIsNullOrderByCreatedAtDesc() ne cherche QUE
-     * les tâches dont l'utilisateur est propriétaire. Les tâches assignées
-     * à cet utilisateur n'apparaissent PAS dans sa liste.
+     * PROBLÈME AVANT (méthode dérivée) :
+     * findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc
+     * → Spring Data interprète : userId = ? OR (assigneeId = ? AND deletedAt IS NULL)
+     * → Le filtre deletedAt IS NULL ne s'applique PAS au userId !
+     * → Les tâches soft-deleted de l'utilisateur étaient retournées si userId matchait
      *
-     * SOLUTION :
-     * Utiliser (t.userId = :username OR t.assigneeId = :username) pour
-     * retourner les tâches où l'utilisateur est créateur OU assignataire.
+     * APRÈS (correction avec @Query explicite) :
+     * WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
+     *   AND t.deletedAt IS NULL
+     * → Le filtre deletedAt IS NULL s'applique AUX DEUX conditions
+     * → Les tâches soft-deleted sont correctement exclues
      *
-     * PRINCIPE — OR logique dans la clause WHERE :
-     * Si l'utilisateur a créé la tâche → userId match → trouvé
-     * Si l'utilisateur est assignataire → assigneeId match → trouvé
-     * Si aucun des deux → pas trouvé
+     * PRINCIPE — PRÉCÉDENCE DES OPÉRATEURS :
+     * En Spring Data JPA, "And" a priorité sur "Or" :
+     *   A Or B And C  →  A Or (B And C)   ← COMPORTEMENT PAR DÉFAUT
+     *   (A Or B) And C                     ← CE QU'ON VEUT
+     *
+     * SOLUTION : Utiliser un @Query JPQL avec des PARENTHÈSES explicites.
      *
      * UTILISÉE PAR : TaskManager.getMyTasks(), TaskPersistenceAdapter
      */
-    Page<TaskEntity> findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc(
-            String userId, String assigneeId, Pageable pageable);
+    @Query("SELECT t FROM TaskEntity t " +
+            "WHERE (t.userId = :userId OR t.assigneeId = :assigneeId) " +
+            "AND t.deletedAt IS NULL " +
+            "ORDER BY t.createdAt DESC")
+    Page<TaskEntity> findByUserIsOwnerOrAssignee(
+            @Param("userId") String userId,
+            @Param("assigneeId") String assigneeId,
+            Pageable pageable);
 
     /**
      * ═══════════════════════════════════════════════════════════
@@ -131,7 +168,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      *                OR LOWER(title) LIKE '%urgence%'        → évalué
      *                OR LOWER(description) LIKE '%urgence%') → évalué)
      *         AND (NULL IS NULL                    → TRUE
-     *                OR t.status = NULL)            → ignoré
+     *                OR t.status = NULL)            → ignoré)
      *
      * → Résultat : filtre sur keyword uniquement !
      *
@@ -503,7 +540,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * SQL :
      * SELECT COUNT(t) FROM tasks t
      * WHERE t.deleted_at IS NULL
-     *   AND t.createdAt >= :after
+     *   AND t.created_at >= :after
      *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
      *
      * NOTE : completedAt est null pour les tâches non terminées.
@@ -523,7 +560,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
      * SQL :
      * SELECT COUNT(t) FROM tasks t
      * WHERE t.deleted_at IS NULL
-     *   AND t.completedAt >= :after
+     *   AND t.completed_at >= :after
      *   AND (:username IS NULL OR t.user_id = :username OR t.assignee_id = :username)
      *
      * NOTE : completedAt est non-null UNIQUEMENT quand status = DONE.

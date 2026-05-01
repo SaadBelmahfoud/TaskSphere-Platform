@@ -209,7 +209,7 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     @Override
     public Page<Task> findByUserIsOwnerOrAssignee(String username, Pageable pageable) {
         log.debug("ADAPTATEUR JPA : Recherche des tâches de l'utilisateur {} (owner OR assignee)", username);
-        return taskRepository.findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc(
+        return taskRepository.findByUserIsOwnerOrAssignee(
                         username, username, pageable)
                 .map(TaskEntity::toDomain);
     }
