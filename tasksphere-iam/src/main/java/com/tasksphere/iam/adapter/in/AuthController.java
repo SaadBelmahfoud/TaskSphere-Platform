@@ -7,6 +7,7 @@ import com.tasksphere.iam.domain.RefreshTokenEntity;
 import com.tasksphere.iam.domain.UserEntity;
 import com.tasksphere.iam.dto.*;
 import com.tasksphere.iam.port.out.UserRepository;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -66,9 +67,15 @@ import java.util.*;
  *   │    → JwtAuthenticationFilter lit le cookie            │
  *   │    → Pas besoin de header Authorization manuel        │
  *   │                                                       │
- *   │ 3. POST /auth/logout                                 │
- *   │    → Serveur: Set-Cookie: accessToken=; Max-Age=0    │
- *   │    → Navigateur supprime le cookie immédiatement      │
+ *   │ 3. POST /auth/refresh                                │
+ *   │    → Body VIDE ou avec refreshToken                  │
+ *   │    → Si body vide : fallback sur cookie refreshToken │
+ *   │    → Cookie mis à jour avec les nouveaux tokens      │
+ *   │                                                       │
+ *   │ 4. POST /auth/logout                                 │
+ *   │    → Body VIDE ou avec refreshToken                  │
+ *   │    → Si body vide : fallback sur cookie refreshToken │
+ *   │    → Cookies effacés (Max-Age=0)                     │
  *   └───────────────────────────────────────────────────────┘
  *
  * P1-6 — DTOs typés + @Valid :
@@ -279,7 +286,7 @@ public class AuthController {
      *
      * PATTERN : Refresh Token Rotation
      * ──────────────────────────────────
-     * 1. Le client envoie le refresh token
+     * 1. Le client envoie le refresh token (body OU cookie)
      * 2. On vérifie qu'il est valide et non expiré
      * 3. On RÉVOQUE l'ancien refresh token (rotation)
      * 4. On crée un NOUVEAU refresh token
@@ -294,18 +301,53 @@ public class AuthController {
      * ═══════════════════════════════════════════════════════════════════
      * PHASE 1 — P1-5 + P1-6 : HttpOnly Cookies + RefreshTokenRequest DTO
      * ═══════════════════════════════════════════════════════════════════
+     * Le refresh token peut provenir de DEUX sources :
+     * 1. Le body de la requête (RefreshTokenRequest DTO) — clients API/mobile
+     * 2. Le cookie HttpOnly "refreshToken" — navigateur (cookie-only mode)
+     *
+     * PRIO : body > cookie (si les deux existent, le body gagne)
+     *
+     * Si le body est absent/vide, on lit le cookie comme fallback.
+     * Cela permet au frontend navigateur de fonctionner SANS stocker
+     * le refreshToken en localStorage → protection XSS améliorée.
+     *
      * Après le refresh, on met à jour les cookies avec les nouveaux tokens.
      * C'est crucial car l'ancien refresh token est révoqué (rotation).
-     * Si on ne met pas à jour le cookie, le navigateur enverra
-     * l'ancien token révoqué → 401 → l'utilisateur doit se reconnecter.
      * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/refresh")
     public ResponseEntity<Map<String, String>> refresh(
-            @Valid @RequestBody RefreshTokenRequest request,
-            HttpServletResponse response) {
-        String rawRefreshToken = request.refreshToken();
-        log.info("Tentative de refresh token");
+            @RequestBody(required = false) RefreshTokenRequest request,
+            HttpServletResponse response,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1 — P1-5 : Double source pour le refresh token
+        // ═══════════════════════════════════════════════════════
+        // CHEMIN 1 : Body de la requête (clients API/mobile)
+        // CHEMIN 2 : Cookie HttpOnly "refreshToken" (navigateur)
+        //
+        // Le body est (required = false) pour permettre le mode
+        // cookie-only. Si le body est null ou le token est vide,
+        // on fallback sur le cookie.
+        // ═══════════════════════════════════════════════════════
+        String rawRefreshToken = null;
+        if (request != null && request.refreshToken() != null && !request.refreshToken().isBlank()) {
+            rawRefreshToken = request.refreshToken();
+            log.info("Tentative de refresh token via body");
+        } else {
+            // Fallback : lire le refresh token depuis le cookie
+            rawRefreshToken = extractCookieValue(httpRequest, "refreshToken");
+            if (rawRefreshToken != null) {
+                log.info("Tentative de refresh token via cookie HttpOnly");
+            }
+        }
+
+        if (rawRefreshToken == null) {
+            log.warn("Refresh token absent (ni body ni cookie)");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("error", "Refresh token requis (body ou cookie)"));
+        }
 
         Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);
         if (tokenOpt.isEmpty()) {
@@ -353,6 +395,10 @@ public class AuthController {
      * Sinon, le navigateur continue d'envoyer les cookies →
      * l'utilisateur reste "connecté" malgré le logout.
      *
+     * Le refresh token peut provenir du body OU du cookie (comme refresh).
+     * Si aucun token n'est trouvé, on efface quand même les cookies
+     * par sécurité (cookies périmés/corrompus).
+     *
      * PRINCIPE DE SUPPRESSION DE COOKIE :
      * On recrée le cookie avec Max-Age=0 → le navigateur le supprime.
      * Il faut les MÊMES propriétés (Path, Domain) que lors de la création.
@@ -360,29 +406,77 @@ public class AuthController {
      */
     @PostMapping("/logout")
     public ResponseEntity<Map<String, String>> logout(
-            @Valid @RequestBody LogoutRequest request,
-            HttpServletResponse response) {
-        String rawRefreshToken = request.refreshToken();
-        log.info("Tentative de déconnexion");
+            @RequestBody(required = false) LogoutRequest request,
+            HttpServletResponse response,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
 
-        Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);
-        if (tokenOpt.isPresent()) {
-            RefreshTokenEntity storedToken = tokenOpt.get();
-            refreshTokenService.revokeAllUserTokens(storedToken.getUser().getId());
-            log.info("Déconnexion réussie pour: {}", storedToken.getUser().getEmail());
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1 — P1-5 : Double source pour le refresh token
+        // ═══════════════════════════════════════════════════════
+        // Même logique que refresh() : body en priorité, cookie en fallback.
+        // Cela permet au frontend navigateur de se déconnecter sans
+        // avoir besoin du refreshToken dans le body.
+        // ═══════════════════════════════════════════════════════
+        String rawRefreshToken = null;
+        if (request != null && request.refreshToken() != null && !request.refreshToken().isBlank()) {
+            rawRefreshToken = request.refreshToken();
+            log.info("Tentative de déconnexion via body");
         } else {
-            log.warn("Tentative de déconnexion avec un token invalide");
+            rawRefreshToken = extractCookieValue(httpRequest, "refreshToken");
+            if (rawRefreshToken != null) {
+                log.info("Tentative de déconnexion via cookie HttpOnly");
+            }
+        }
+
+        if (rawRefreshToken != null) {
+            Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);
+            if (tokenOpt.isPresent()) {
+                RefreshTokenEntity storedToken = tokenOpt.get();
+                refreshTokenService.revokeAllUserTokens(storedToken.getUser().getId());
+                log.info("Déconnexion réussie pour: {}", storedToken.getUser().getEmail());
+            } else {
+                log.warn("Tentative de déconnexion avec un token invalide");
+            }
+        } else {
+            log.warn("Déconnexion sans token — cookies effacés par sécurité");
         }
 
         // ═══════════════════════════════════════════════════════
         // PHASE 1 — P1-5 : Effacer les cookies HttpOnly
         // ═══════════════════════════════════════════════════════
-        // Même si le refresh token est invalide, on efface les cookies.
-        // Pourquoi ? Par sécurité : si le client a des cookies
-        // périmés ou corrompus, on veut les nettoyer de toute façon.
+        // TOUJOURS effacer les cookies, même si le token est invalide.
+        // Par sécurité : si le client a des cookies périmés ou
+        // corrompus, on veut les nettoyer de toute façon.
         // ═══════════════════════════════════════════════════════
         cookieHelper.clearAuthCookies(response);
 
         return ResponseEntity.ok(Map.of("message", "Déconnexion réussie"));
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-5 : Extraction d'un cookie par nom
+     * ═══════════════════════════════════════════════════════════════════
+     * Utilitaire pour lire la valeur d'un cookie HttpOnly depuis
+     * la requête HTTP. Le code serveur Java PEUT lire les cookies
+     * HttpOnly (seul JavaScript ne le peut pas).
+     *
+     * @param request   La requête HTTP contenant les cookies
+     * @param cookieName Le nom du cookie à chercher
+     * @return La valeur du cookie, ou null si absent
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private String extractCookieValue(jakarta.servlet.http.HttpServletRequest request, String cookieName) {
+        Cookie[] cookies = request.getCookies();
+        if (cookies == null) return null;
+        for (Cookie cookie : cookies) {
+            if (cookieName.equals(cookie.getName())) {
+                String value = cookie.getValue();
+                if (value != null && !value.isBlank()) {
+                    return value;
+                }
+            }
+        }
+        return null;
     }
 }
