@@ -37,6 +37,31 @@ public interface IamQueryService {
     Optional<String> findUserIdByEmail(String email);
 
     /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION — Résoudre un UUID en email
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME :
+     * Le frontend peut envoyer un UUID comme assigneeId (user.id)
+     * au lieu d'un email (user.email). Le backend stocke ce UUID
+     * directement dans assignee_id, mais les requêtes JPQL comparent
+     * assigneeId avec l'email du JWT (authentication.getName() = email).
+     * UUID ≠ email → la query ne matche JAMAIS → les tâches assignées
+     * n'apparaissent pas pour l'utilisateur assigné.
+     *
+     * SOLUTION :
+     * Cette méthode permet de résoudre un UUID en email avant le stockage.
+     * Si l'input ressemble à un UUID → chercher l'email correspondant.
+     * Si l'input est déjà un email → le retourner tel quel.
+     *
+     * UTILISÉE PAR : IamUserAdapter.resolveAssigneeToEmail()
+     *
+     * @param userId l'UUID de l'utilisateur
+     * @return Optional contenant l'email si trouvé, Optional.empty() sinon
+     */
+    Optional<String> findEmailById(String userId);
+
+    /**
      * Récupère le rôle d'un utilisateur avec le préfixe "ROLE_".
      * Exemple : retourne "ROLE_USER", "ROLE_MANAGER", "ROLE_ADMIN"
      * @param userId l'ID de l'utilisateur (UUID)

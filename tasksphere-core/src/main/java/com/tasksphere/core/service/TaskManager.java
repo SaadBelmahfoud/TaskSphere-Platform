@@ -100,27 +100,6 @@ public class TaskManager {
     private final TaskPersistencePort persistencePort;
     private final EventPublisherPort eventPublisher;
     private final UserInformationPort userInformationPort;
-
-    /**
-     * Service d'audit trail (Section 6 — Collaboration).
-     *
-     * INJECTÉ PAR SPRING (constructor injection via @RequiredArgsConstructor).
-     * ActivityLogService est un service d'application dans le package service.
-     * Il encapsule la création et la sauvegarde des entrées d'audit.
-     *
-     * PRINCIPE DDD : Le service ne dépend que d'une abstraction
-     * (le service ActivityLogService, pas le port directement).
-     * Si le format d'audit change, seul ActivityLogService est modifié.
-     *
-     * CORRECTION (vs version précédente) :
-     * AVANT : private final ActivityLogPersistencePort activityLogPort;
-     *   → Erreur : ActivityLogPersistencePort n'existe pas.
-     *   → Le port s'appelle ActivityLogPort.
-     *
-     * APRÈS : private final ActivityLogService activityLogService;
-     *   → ✅ ActivityLogService existe dans le package service
-     *   → Il wrappe ActivityLogPort et gère la création d'ActivityLog
-     */
     private final ActivityLogService activityLogService;
 
     // ═══════════════════════════════════════════════════════
@@ -133,7 +112,7 @@ public class TaskManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // CRÉATION DE TÂCHE — CORRECTIONS B1, B9, B10
+    // CRÉATION DE TÂCHE — CORRECTIONS B1, B9, B10 + UUID→EMAIL
     // ═══════════════════════════════════════════════════════
 
     /**
@@ -149,6 +128,11 @@ public class TaskManager {
      *
      * B10 : getUserInfo() retiré (était appelé mais jamais utilisé)
      *       → Suppression de l'appel DB inutile
+     *
+     * CORRECTION UUID→EMAIL :
+     * Si le frontend envoie un UUID comme assigneeId, on le résout en email
+     * AVANT de le stocker. Sinon, la requête searchTasksForUser (qui compare
+     * assigneeId avec l'email du JWT) ne trouvera JAMAIS la tâche.
      */
     @Transactional
     public Task createTask(String title, String description, String currentUsername,
@@ -158,17 +142,12 @@ public class TaskManager {
         Task taskToSave = Task.create(title, description != null ? description : "", currentUsername);
 
         // CORRECTION B1 : valueOf() protégé par toUpperCase() + try-catch
-        // ──────────────────────────────────────────────────────────────
-        // AVANT : Task.TaskPriority.valueOf(priority) → crash si "high"
-        // APRÈS : valueOf(priority.toUpperCase()) + catch → null si invalide
-        // Le comportement est maintenant cohérent avec parsePriority() du contrôleur
         if (priority != null && !priority.isBlank()) {
             try {
                 taskToSave = taskToSave.updatePriority(
-                        Task.TaskPriority.valueOf(priority.toUpperCase()));  // ← CORRECTION B1
+                        Task.TaskPriority.valueOf(priority.toUpperCase()));
             } catch (IllegalArgumentException e) {
                 log.warn("SERVICE : Priorité invalide '{}' ignorée, utilisation de MEDIUM", priority);
-                // La priorité par défaut (MEDIUM) est conservée
             }
         }
         if (dueDate != null) {
@@ -176,32 +155,34 @@ public class TaskManager {
         }
 
         // CORRECTION B9 : Vérification RBAC pour l'assignation à la création
-        // ──────────────────────────────────────────────────────────────
-        // AVANT : Aucune vérification → n'importe quel USER pouvait assigner
-        // APRÈS : Seuls ADMIN et MANAGER peuvent assigner à la création
-        // Le TaskController vérifie déjà le rôle, mais le service doit aussi
-        // être protégé (principe de défense en profondeur)
         if (assigneeId != null && !assigneeId.isBlank()) {
             var userInfo = userInformationPort.getUserInfo(currentUsername);
             String userRole = userInfo.userRole();
-            // Retirer le préfixe "ROLE_" si présent (Spring Security convention)
             String cleanRole = userRole.startsWith("ROLE_")
                     ? userRole.substring(5) : userRole;
             if (!"ADMIN".equals(cleanRole) && !"MANAGER".equals(cleanRole)) {
                 log.warn("RBAC : User {} (rôle: {}) a tenté d'assigner une tâche sans permission",
                         currentUsername, cleanRole);
-                // On ignore l'assignation au lieu de crasher — la tâche est créée sans assignation
             } else {
-                taskToSave = taskToSave.assignTo(assigneeId);
+                // ═══════════════════════════════════════════════════════════
+                // CORRECTION UUID→EMAIL : Résoudre l'assigneeId en email
+                // ═══════════════════════════════════════════════════════════
+                // AVANT : taskToSave.assignTo(assigneeId)
+                //   → Si le frontend envoie un UUID, il est stocké tel quel
+                //   → La query searchTasksForUser ne matche jamais
+                //
+                // APRÈS : taskToSave.assignTo(resolveAssigneeId)
+                //   → L'UUID est résolu en email avant stockage
+                //   → La query searchTasksForUser matche correctement
+                String resolvedAssigneeId = userInformationPort.resolveAssigneeToEmail(assigneeId);
+                taskToSave = taskToSave.assignTo(resolvedAssigneeId);
             }
         }
 
         Task savedTask = persistencePort.save(taskToSave);
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
-        // ═══════════════════════════════════════════════════════
         // [Section 6] AUDIT : Création de tâche
-        // ═══════════════════════════════════════════════════════
         StringBuilder details = new StringBuilder("Tâche créée");
         if (savedTask.priority() != Task.TaskPriority.MEDIUM) {
             details.append(" avec priorité ").append(savedTask.priority().name());
@@ -225,14 +206,6 @@ public class TaskManager {
     public Page<Task> getMyTasks(String currentUsername, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         // CORRECTION BUG 1 : Utiliser findByUserIsOwnerOrAssignee au lieu de findByUserId
-        // ──────────────────────────────────────────────────────────────────────────────
-        // AVANT : persistencePort.findByUserId(currentUsername, pageable)
-        //   → Ne retournait QUE les tâches créées par l'utilisateur
-        //   → Les tâches assignées à l'utilisateur n'apparaissaient PAS
-        //
-        // APRÈS : persistencePort.findByUserIsOwnerOrAssignee(currentUsername, pageable)
-        //   → Retourne les tâches créées PAR l'utilisateur ET les tâches assignées À l'utilisateur
-        //   → Un USER voit maintenant toutes les tâches auxquelles il est impliqué
         return persistencePort.findByUserIsOwnerOrAssignee(currentUsername, pageable);
     }
 
@@ -242,44 +215,8 @@ public class TaskManager {
      * ═══════════════════════════════════════════════════════════
      *
      * LOGIQUE RBAC POUR LA RECHERCHE :
-     * ──────────────────────────────────
-     *
-     * ADMIN ou MANAGER :
-     * → Recherche GLOBALE (voient toutes les tâches de tous les utilisateurs)
-     * → Utilise searchTasks() standard (sans filtre user)
-     *
-     * USER :
-     * → Recherche LIMITÉE aux tâches créées + assignées
-     * → CORRECTION BUG 1 : Utilise searchTasksForUser() (UNE SEULE requête)
-     *   au lieu de l'ancienne approche cassée qui faisait DEUX requêtes
-     *   et fusionnait les résultats manuellement.
-     *
-     * ═══════════════════════════════════════════════════════════
-     * CORRECTION BUG 1 — Passage de 2 requêtes à 1 seule requête
-     * ═══════════════════════════════════════════════════════════
-     *
-     * AVANT (APPROCHE CASSÉE) :
-     * ────────────────────────
-     * Pour un USER, on faisait :
-     * 1. searchTasks(ownedCriteria)    → Page<Task> ownedTasks
-     * 2. searchTasks(assignedCriteria) → Page<Task> assignedTasks
-     * 3. Stream.concat(owned, assigned).distinct().toList()
-     * 4. totalElements = Math.max(owned.total, assigned.total) → FAUX !
-     *
-     * PROBLÈMES :
-     * - totalElements incorrect → pagination cassée
-     * - Fusion de 2 pages ≠ 1 page correcte
-     * - Doublons possibles (gérés par .distinct() mais coûteux)
-     * - 2 requêtes SQL au lieu d'1
-     *
-     * APRÈS (APPROCHE CORRIGÉE) :
-     * ──────────────────────────
-     * Pour un USER, on fait :
-     * 1. searchTasksForUser(username, criteria, pageable)
-     *    → UNE SEULE requête SQL avec (userId = :username OR assigneeId = :username)
-     *    → Pagination EXACTE
-     *    → Pas de doublons
-     *    → 1 seule requête SQL
+     * ADMIN/MANAGER → Recherche GLOBALE (voient toutes les tâches)
+     * USER → Recherche LIMITÉE aux tâches créées + assignées
      */
     @Transactional(readOnly = true)
     public Page<Task> searchTasks(TaskPersistencePort.TaskSearchCriteria criteria,
@@ -291,12 +228,8 @@ public class TaskManager {
         Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortField));
 
         if ("ADMIN".equals(currentRole) || "MANAGER".equals(currentRole)) {
-            // ADMIN/MANAGER : Recherche globale (pas de filtre utilisateur)
             return persistencePort.searchTasks(criteria, pageable);
         } else {
-            // USER : Recherche limitée aux tâches où l'utilisateur est impliqué
-            // CORRECTION BUG 1 : Utilise searchTasksForUser() (1 seule requête)
-            // au lieu de l'ancienne approche cassée (2 requêtes + fusion manuelle)
             return persistencePort.searchTasksForUser(currentUsername, criteria, pageable);
         }
     }
@@ -310,15 +243,6 @@ public class TaskManager {
         if ("ADMIN".equals(currentRole) || "MANAGER".equals(currentRole)) {
             return persistencePort.findById(taskId);
         }
-        // CORRECTION BUG 1 : Utiliser findByIdAndUserIsOwnerOrAssignee au lieu de findByIdAndUserId
-        // ────────────────────────────────────────────────────────────────────────────────────────
-        // AVANT : persistencePort.findByIdAndUserId(taskId, currentUsername)
-        //   → Un USER qui est ASSIGNATAIRE (mais pas créateur) recevait un 404
-        //   → La tâche existait en BDD mais n'était pas accessible à l'assignataire
-        //
-        // APRÈS : persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername)
-        //   → Un USER peut voir la tâche s'il est créateur (userId) OU assignataire (assigneeId)
-        //   → Cela permet à un utilisateur assigné de voir le détail de la tâche
         return persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername);
     }
 
@@ -333,16 +257,8 @@ public class TaskManager {
         if ("ADMIN".equals(currentRole)) {
             existingTask = persistencePort.findById(taskId).orElse(null);
         } else if ("MANAGER".equals(currentRole)) {
-            // CORRECTION BUG 1 : MANAGER peut modifier toutes les tâches
             existingTask = persistencePort.findById(taskId).orElse(null);
         } else {
-            // CORRECTION BUG 1 : USER peut modifier ses tâches créées ET les tâches assignées
-            // ──────────────────────────────────────────────────────────────────────────
-            // AVANT : persistencePort.findByIdAndUserId(taskId, currentUsername)
-            //   → Un USER qui est ASSIGNATAIRE ne pouvait pas modifier la tâche
-            //
-            // APRÈS : persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername)
-            //   → Un USER peut modifier la tâche s'il est créateur OU assignataire
             existingTask = persistencePort.findByIdAndUserIsOwnerOrAssignee(taskId, currentUsername).orElse(null);
         }
         if (existingTask == null) return Optional.empty();
@@ -409,6 +325,26 @@ public class TaskManager {
     // ASSIGNATION DE TÂCHE (MANAGER/ADMIN uniquement)
     // ═══════════════════════════════════════════════════════
 
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION UUID→EMAIL : Résoudre l'assigneeId avant stockage
+     * ═══════════════════════════════════════════════════════════
+     *
+     * PROBLÈME :
+     * Le frontend envoie parfois un UUID (user.id) comme assigneeId
+     * au lieu d'un email (user.email). Le backend stocke ce UUID
+     * directement dans assignee_id, mais les requêtes JPQL comparent
+     * assigneeId avec l'email du JWT.
+     * UUID ≠ email → la query ne matche JAMAIS → les tâches assignées
+     * n'apparaissent pas pour l'utilisateur assigné.
+     *
+     * SOLUTION :
+     * Avant de stocker l'assigneeId, on appelle
+     * userInformationPort.resolveAssigneeToEmail() qui :
+     * 1. Si c'est un email (contient @) → le retourne tel quel
+     * 2. Si c'est un UUID → cherche l'email correspondant via IAM
+     * 3. Si la résolution échoue → retourne l'input original (fallback)
+     */
     @Transactional
     public Optional<Task> assignTask(String taskId, String currentUsername,
                                      String currentRole, String assigneeId) {
@@ -418,8 +354,10 @@ public class TaskManager {
         Task existingTask = persistencePort.findById(taskId).orElse(null);
         if (existingTask == null) return Optional.empty();
 
+        // CORRECTION UUID→EMAIL : Résoudre l'assigneeId en email
         String effectiveAssigneeId = (assigneeId != null && !assigneeId.isBlank())
-                ? assigneeId : null;
+                ? userInformationPort.resolveAssigneeToEmail(assigneeId) : null;
+
         Task savedTask = persistencePort.save(existingTask.assignTo(effectiveAssigneeId));
 
         // [Section 6] AUDIT : TASK_ASSIGNED ou TASK_UNASSIGNED
@@ -460,22 +398,6 @@ public class TaskManager {
     // [Section 6] AUDIT TRAIL — Méthode utilitaire privée
     // ═══════════════════════════════════════════════════════
 
-    /**
-     * Enregistre une action dans l'audit log (fail-safe).
-     *
-     * Délègue à ActivityLogService.log() qui :
-     * 1. Crée un ActivityLog via la factory method
-     * 2. Le sauvegarde via ActivityLogPort
-     *
-     * Le try-catch garantit que si l'audit échoue, l'opération
-     * métier principale (déjà réussie) n'est pas impactée.
-     *
-     * @param action    Le type d'action (ActivityLog.Action)
-     * @param actorEmail L'email de l'utilisateur qui fait l'action
-     * @param details    Description humaine de l'action
-     * @param taskId     ID de la tâche concernée (null si hors contexte)
-     * @param taskTitle  Titre de la tâche (denormalized, null si hors contexte)
-     */
     private void logActivity(ActivityLog.Action action, String actorEmail,
                              String details, String taskId, String taskTitle) {
         try {

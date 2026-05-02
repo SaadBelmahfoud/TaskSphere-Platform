@@ -18,6 +18,7 @@ import java.util.Optional;
  * Le module Core utilisera cette interface pour :
  * - Vérifier qu'un utilisateur existe avant de lui lier une tâche
  * - Récupérer le rôle d'un utilisateur pour les vérifications d'autorisation
+ * - Résoudre un UUID en email pour l'assignation de tâches
  *
  * CONCEPT - @Service + injection par constructeur :
  * ================================================
@@ -57,6 +58,30 @@ public class IamQueryServiceImpl implements IamQueryService {
     public Optional<String> findUserIdByEmail(String email) {
         log.debug("Recherche de l'ID utilisateur par email: {}", email);
         return userRepository.findByEmail(email).map(user -> user.getId());
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════
+     * CORRECTION — Résoudre un UUID en email
+     * ═══════════════════════════════════════════════════════════
+     *
+     * Cette méthode est l'inverse de findUserIdByEmail().
+     * Elle permet de résoudre un UUID (user.id) en email (user.email)
+     * avant de le stocker dans assigneeId.
+     *
+     * POURQUOI ?
+     * Le backend compare assigneeId avec l'email du JWT dans les requêtes :
+     *   WHERE t.assigneeId = :username  (username = email du JWT)
+     * Si assigneeId contient un UUID au lieu d'un email, la comparaison
+     * échoue et les tâches assignées n'apparaissent pas.
+     *
+     * @param userId l'UUID de l'utilisateur
+     * @return Optional contenant l'email si trouvé, Optional.empty() sinon
+     */
+    @Override
+    public Optional<String> findEmailById(String userId) {
+        log.debug("Recherche de l'email utilisateur par ID: {}", userId);
+        return userRepository.findById(userId).map(user -> user.getEmail());
     }
 
     /**
