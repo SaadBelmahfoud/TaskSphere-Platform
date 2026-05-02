@@ -1,11 +1,13 @@
 package com.tasksphere.iam.adapter.in;
 
+import com.tasksphere.iam.config.security.CookieHelper;
 import com.tasksphere.iam.config.security.JwtService;
 import com.tasksphere.iam.config.security.RefreshTokenService;
 import com.tasksphere.iam.domain.RefreshTokenEntity;
 import com.tasksphere.iam.domain.UserEntity;
 import com.tasksphere.iam.dto.*;
 import com.tasksphere.iam.port.out.UserRepository;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,13 +39,43 @@ import java.util.*;
  * - Email et username doivent être uniques
  *
  * ═══════════════════════════════════════════════════════════════════
- * PHASE 1 — CORRECTION P1-6 : DTOs typés + @Valid
+ * PHASE 1 — CORRECTION P1-5 + P1-6 : HttpOnly Cookies + DTOs
  * ═══════════════════════════════════════════════════════════════════
  *
- * AVANT : Map<String, String> pour login, refresh, logout
+ * P1-5 — HttpOnly Cookies :
+ *   Les tokens sont désormais envoyés DANS LES DEUX formats :
+ *   1. Dans le body JSON (rétrocompatibilité mobile/API)
+ *   2. En cookies HttpOnly (sécurité navigateur, anti-XSS)
+ *
+ *   POURQUOI LES DEUX ?
+ *   - Cookie HttpOnly → Protection XSS (JS ne peut pas lire le token)
+ *   - Body JSON → Rétrocompatibilité avec les clients mobiles/API
+ *     qui ne gèrent pas les cookies (curl, Postman, apps mobiles)
+ *   - Le frontend navigateur utilisera les cookies en priorité
+ *   - Le frontend mobile utilisera le body JSON
+ *
+ *   FLUX NAVIGATEUR :
+ *   ┌───────────────────────────────────────────────────────┐
+ *   │ 1. POST /auth/login                                  │
+ *   │    → Serveur: Set-Cookie: accessToken=...; HttpOnly   │
+ *   │    → Serveur: Set-Cookie: refreshToken=...; HttpOnly  │
+ *   │    → Body: { accessToken, refreshToken }             │
+ *   │                                                       │
+ *   │ 2. GET /api/v1/tasks                                 │
+ *   │    → Navigateur envoie automatiquement le cookie      │
+ *   │    → JwtAuthenticationFilter lit le cookie            │
+ *   │    → Pas besoin de header Authorization manuel        │
+ *   │                                                       │
+ *   │ 3. POST /auth/logout                                 │
+ *   │    → Serveur: Set-Cookie: accessToken=; Max-Age=0    │
+ *   │    → Navigateur supprime le cookie immédiatement      │
+ *   └───────────────────────────────────────────────────────┘
+ *
+ * P1-6 — DTOs typés + @Valid :
+ *   AVANT : Map<String, String> pour login, refresh, logout
  *   → Aucune validation, typage faible, pas de documentation
  *
- * APRÈS : DTOs typés (LoginRequest, RefreshTokenRequest, LogoutRequest)
+ *   APRÈS : DTOs typés (LoginRequest, RefreshTokenRequest, LogoutRequest)
  *   → @Valid active la validation Jakarta automatique
  *   → 400 Bad Request avec détails si validation échoue
  *   → Documentation Swagger auto-générée
@@ -61,6 +93,25 @@ public class AuthController {
     private final RefreshTokenService refreshTokenService;
 
     /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-5 : Injection de CookieHelper
+     * ═══════════════════════════════════════════════════════════════════
+     * CookieHelper gère les opérations Set-Cookie / Clear-Cookie.
+     * Il est injecté via le constructeur (@RequiredArgsConstructor).
+     *
+     * DOUBLE CANAL DE TOKENS :
+     * ──────────────────────────
+     * 1. Cookies HttpOnly → Sécurité navigateur (anti-XSS)
+     * 2. Body JSON → Rétrocompatibilité API/mobile
+     *
+     * Le navigateur envoie automatiquement les cookies avec chaque
+     * requête correspondant au Path. Le client mobile/API doit
+     * gérer manuellement le stockage des tokens du body JSON.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final CookieHelper cookieHelper;
+
+    /**
      * POST /api/v1/auth/login — Connexion.
      *
      * FLUX :
@@ -68,7 +119,10 @@ public class AuthController {
      * 2. Vérifier le mot de passe avec BCrypt (passwordEncoder.matches)
      * 3. Vérifier que le compte est activé
      * 4. Générer un JWT (accessToken) + Refresh Token
-     * 5. Retourner les deux tokens
+     * 5. ═══════════════════════════════════════════════════════
+     *    P1-5 : Envoyer les tokens en cookies HttpOnly
+     *    ═══════════════════════════════════════════════════════
+     * 6. Retourner les deux tokens dans le body (rétrocompatibilité)
      *
      * SÉCURITÉ :
      * - On ne révèle PAS si l'email existe ou pas (même message d'erreur)
@@ -85,7 +139,9 @@ public class AuthController {
      * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/login")
-    public ResponseEntity<Map<String, String>> login(@Valid @RequestBody LoginRequest loginRequest) {
+    public ResponseEntity<Map<String, String>> login(
+            @Valid @RequestBody LoginRequest loginRequest,
+            HttpServletResponse response) {
         String email = loginRequest.email();
         String rawPassword = loginRequest.password();
         log.info("Tentative de connexion pour: {}", email);
@@ -110,6 +166,19 @@ public class AuthController {
         String refreshToken = refreshTokenService.createRefreshToken(user.getId());
         log.info("Connexion réussie pour: {}", email);
 
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1 — P1-5 : Émettre les cookies HttpOnly
+        // ═══════════════════════════════════════════════════════
+        // CookieHelper ajoute les headers Set-Cookie à la réponse.
+        // Le navigateur stocke les cookies automatiquement.
+        // - accessToken : Path=/ → envoyé sur TOUTES les requêtes
+        // - refreshToken : Path=/api/v1/auth → envoyé SEULEMENT sur /auth/**
+        //
+        // Les tokens sont TOUJOURS aussi dans le body JSON pour
+        // la rétrocompatibilité avec les clients non-navigateur.
+        // ═══════════════════════════════════════════════════════
+        cookieHelper.setAuthCookies(response, accessToken, refreshToken);
+
         return ResponseEntity.ok(Map.of(
                 "accessToken", accessToken,
                 "refreshToken", refreshToken,
@@ -127,7 +196,10 @@ public class AuthController {
      * 3. Hacher le mot de passe avec BCrypt
      * 4. Créer l'utilisateur avec le rôle USER par défaut
      * 5. Générer les tokens JWT
-     * 6. Retourner les tokens + infos utilisateur
+     * 6. ═══════════════════════════════════════════════════════
+     *    P1-5 : Envoyer les tokens en cookies HttpOnly
+     *    ═══════════════════════════════════════════════════════
+     * 7. Retourner les tokens + infos utilisateur
      *
      * @Valid : Active la validation Jakarta sur RegisterRequest :
      * - @NotBlank sur username, firstName, lastName, email, password, confirmPassword
@@ -142,7 +214,9 @@ public class AuthController {
      * Le frontend utilise aussi Zod avec .refine() pour cette vérification.
      */
     @PostMapping("/register")
-    public ResponseEntity<Map<String, Object>> register(@Valid @RequestBody RegisterRequest request) {
+    public ResponseEntity<Map<String, Object>> register(
+            @Valid @RequestBody RegisterRequest request,
+            HttpServletResponse response) {
         log.info("Tentative d'inscription pour: {}", request.email());
 
         // Vérification confirmPassword
@@ -181,6 +255,11 @@ public class AuthController {
         String accessToken = jwtService.generateAccessToken(newUser.getEmail(), newUser.getRole());
         String refreshToken = refreshTokenService.createRefreshToken(newUser.getId());
 
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1 — P1-5 : Émettre les cookies HttpOnly après inscription
+        // ═══════════════════════════════════════════════════════
+        cookieHelper.setAuthCookies(response, accessToken, refreshToken);
+
         return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
                 "message", "Inscription réussie",
                 "accessToken", accessToken,
@@ -213,15 +292,18 @@ public class AuthController {
      *   plus → il devra se reconnecter → l'attaquant est éjecté.
      *
      * ═══════════════════════════════════════════════════════════════════
-     * PHASE 1 — P1-6 : RefreshTokenRequest DTO + @Valid
+     * PHASE 1 — P1-5 + P1-6 : HttpOnly Cookies + RefreshTokenRequest DTO
      * ═══════════════════════════════════════════════════════════════════
-     * AVANT : @RequestBody Map<String, String> request
-     * APRÈS : @Valid @RequestBody RefreshTokenRequest request
-     * → @NotBlank sur refreshToken empêche les requêtes sans token
+     * Après le refresh, on met à jour les cookies avec les nouveaux tokens.
+     * C'est crucial car l'ancien refresh token est révoqué (rotation).
+     * Si on ne met pas à jour le cookie, le navigateur enverra
+     * l'ancien token révoqué → 401 → l'utilisateur doit se reconnecter.
      * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/refresh")
-    public ResponseEntity<Map<String, String>> refresh(@Valid @RequestBody RefreshTokenRequest request) {
+    public ResponseEntity<Map<String, String>> refresh(
+            @Valid @RequestBody RefreshTokenRequest request,
+            HttpServletResponse response) {
         String rawRefreshToken = request.refreshToken();
         log.info("Tentative de refresh token");
 
@@ -241,6 +323,15 @@ public class AuthController {
         String newAccessToken = jwtService.generateAccessToken(user.getEmail(), user.getRole());
         log.info("Refresh token réussi pour: {}", user.getEmail());
 
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1 — P1-5 : Mettre à jour les cookies après rotation
+        // ═══════════════════════════════════════════════════════
+        // L'ancien refresh token est révoqué, on doit mettre à jour
+        // le cookie avec le nouveau token. Sinon, la prochaine
+        // tentative de refresh échouera avec un token révoqué.
+        // ═══════════════════════════════════════════════════════
+        cookieHelper.setAuthCookies(response, newAccessToken, newRefreshToken);
+
         return ResponseEntity.ok(Map.of(
                 "accessToken", newAccessToken,
                 "refreshToken", newRefreshToken,
@@ -256,15 +347,21 @@ public class AuthController {
      * Le JWT restant expirera naturellement (1h max).
      *
      * ═══════════════════════════════════════════════════════════════════
-     * PHASE 1 — P1-6 : LogoutRequest DTO + @Valid
+     * PHASE 1 — P1-5 + P1-6 : Effacer les cookies + LogoutRequest DTO
      * ═══════════════════════════════════════════════════════════════════
-     * AVANT : @RequestBody Map<String, String> request
-     * APRÈS : @Valid @RequestBody LogoutRequest request
-     * → @NotBlank sur refreshToken
+     * La déconnexion DOIT effacer les cookies HttpOnly.
+     * Sinon, le navigateur continue d'envoyer les cookies →
+     * l'utilisateur reste "connecté" malgré le logout.
+     *
+     * PRINCIPE DE SUPPRESSION DE COOKIE :
+     * On recrée le cookie avec Max-Age=0 → le navigateur le supprime.
+     * Il faut les MÊMES propriétés (Path, Domain) que lors de la création.
      * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/logout")
-    public ResponseEntity<Map<String, String>> logout(@Valid @RequestBody LogoutRequest request) {
+    public ResponseEntity<Map<String, String>> logout(
+            @Valid @RequestBody LogoutRequest request,
+            HttpServletResponse response) {
         String rawRefreshToken = request.refreshToken();
         log.info("Tentative de déconnexion");
 
@@ -276,6 +373,15 @@ public class AuthController {
         } else {
             log.warn("Tentative de déconnexion avec un token invalide");
         }
+
+        // ═══════════════════════════════════════════════════════
+        // PHASE 1 — P1-5 : Effacer les cookies HttpOnly
+        // ═══════════════════════════════════════════════════════
+        // Même si le refresh token est invalide, on efface les cookies.
+        // Pourquoi ? Par sécurité : si le client a des cookies
+        // périmés ou corrompus, on veut les nettoyer de toute façon.
+        // ═══════════════════════════════════════════════════════
+        cookieHelper.clearAuthCookies(response);
 
         return ResponseEntity.ok(Map.of("message", "Déconnexion réussie"));
     }
