@@ -19,7 +19,7 @@
 #
 # SOLUTION :
 #   Définir init.user.password dans le profil test.
-#   En environnement de test, le mot de passe n'a pas besoin d'être
+#   En environnement de test, le mot de passe n'a pas pas besoin d'être
 #   fort car la base est en mémoire et détruite après les tests.
 #   Mais il DOIT être défini pour que l'application démarre.
 # ═══════════════════════════════════════════════════════════════════
@@ -49,10 +49,23 @@ jwt:
 # utilisateurs de test (saadoune, manager, admin).
 # En environnement de test, un mot de passe simple est acceptable
 # car la base H2 est détruite après l'exécution.
+#
+# NOTE : Les tests d'intégration (AuthControllerIT) utilisent ce
+# même mot de passe pour se connecter lors des tests de login.
+# Si vous le changez ici, changez-le aussi dans les tests.
 # ═══════════════════════════════════════════════════════════════════
 init:
   user:
     password: test-password-for-integration-tests
+
+# CORS : origine par défaut pour les tests
+cors:
+  allowed-origins: http://localhost:3000
+
+# Cookies : Secure=false en test (HTTP)
+app:
+  cookie:
+    secure: false
 
 server:
   port: 0                     # Port aléatoire libre (évite les conflits)

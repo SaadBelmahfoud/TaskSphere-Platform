@@ -54,6 +54,54 @@ spring:
 jwt:
   secret: ${JWT_SECRET}
 
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — CORRECTION P0-1 : init.user.password obligatoire
+# ═══════════════════════════════════════════════════════════════════
+#
+# AVANT :
+#   @Value("${init.user.password:password123}")
+#   → "password123" comme default = faille de sécurité
+#
+# APRÈS :
+#   @Value("${init.user.password}")
+#   → PAS de default = l'application CRASH si pas configuré
+#   → Fail-Fast : on préfère un crash à un mot de passe faible
+#
+# EN MODE DEV :
+#   Définir INIT_USER_PASSWORD dans :
+#   - Variable d'environnement de l'IDE (IntelliJ/VSCode)
+#   - Ou fichier .env à la racine du projet
+#
+# SPRING RELAXED BINDING :
+#   init.user.password dans YAML → INIT_USER_PASSWORD en variable d'env
+#   Spring convertit automatiquement : dots → underscores, minuscules → MAJUSCULES
+# ═══════════════════════════════════════════════════════════════════
+init:
+  user:
+    password: ${INIT_USER_PASSWORD}
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P1-5 : Configuration des cookies HttpOnly
+# ═══════════════════════════════════════════════════════════════════
+#
+# app.cookie.secure contrôle le flag Secure des cookies :
+# - false (dev)  : cookies envoyés en HTTP (localhost n'a pas de HTTPS)
+# - true  (prod) : cookies envoyés UNIQUEMENT en HTTPS
+#
+# PRINCIPE :
+# En développement local (http://localhost:8080), le navigateur n'envoie
+# PAS les cookies Secure car la connexion n'est pas HTTPS.
+# Si on met Secure=true en dev → les cookies ne sont jamais envoyés
+# → l'authentification par cookie ne fonctionne PAS.
+#
+# En production (https://tasksphere.example.com), Secure=true est OBLIGATOIRE.
+# Sans Secure, les cookies peuvent être interceptés par un attaquant
+# sur une connexion HTTP non chiffrée (Man-in-the-Middle).
+# ═══════════════════════════════════════════════════════════════════
+app:
+  cookie:
+    secure: false
+
 # Port du serveur
 server:
   port: 8080

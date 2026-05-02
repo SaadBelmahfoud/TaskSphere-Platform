@@ -143,6 +143,35 @@ init:
     password: ${INIT_USER_PASSWORD}
 
 # ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P1-5 : Cookies Secure en production
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRINCIPE :
+# En production, le frontend est servi via HTTPS (reverse proxy nginx).
+# Le flag Secure=true garantit que les cookies ne sont envoyés QUE
+# sur des connexions HTTPS chiffrées.
+#
+# SANS Secure=true EN PROD :
+# - Si un utilisateur accède au site en HTTP (au lieu de HTTPS),
+#   le navigateur envoie les cookies en clair sur le réseau
+# - Un attaquant peut intercepter le cookie accessToken (MITM)
+# - L'attaquant peut usurper la session de l'utilisateur
+#
+# AVEC Secure=true EN PROD :
+# - Les cookies ne sont envoyés que sur HTTPS
+# - Même si l'utilisateur tape http://..., le navigateur
+#   NE ENVOIE PAS les cookies → l'attaquant ne peut rien intercepter
+#
+# ATTENTION :
+# Secure=true ne fonctionne PAS en HTTP (localhost).
+# C'est pourquoi application.yaml (dev) a secure: false
+# et application-postgres.yml (prod) a secure: true.
+# ═══════════════════════════════════════════════════════════════════
+app:
+  cookie:
+    secure: true
+
+# ═══════════════════════════════════════════════════════════════════
 # CORS — Origines autorisées (configurable via variable d'environnement)
 # ═══════════════════════════════════════════════════════════════════
 # SPRINT 5 : Origines CORS configurables pour la production.
