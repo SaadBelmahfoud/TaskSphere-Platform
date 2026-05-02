@@ -38,8 +38,9 @@ import java.util.List;
  * ────────────────────────────────────────────
  * 1. CorsFilter → gère le CORS (origines autorisées)
  * 2. CsrfFilter → DÉSACTIVÉ (on utilise des JWT, pas des sessions)
- * 3. JwtAuthenticationFilter → extrait et valide le JWT
- * 4. UsernamePasswordAuthenticationFilter → PAS utilisé (pas de form login)
+ * 3. RateLimiterFilter → limite les requêtes sur /auth/** (PHASE 1)
+ * 4. JwtAuthenticationFilter → extrait et valide le JWT
+ * 5. UsernamePasswordAuthenticationFilter → PAS utilisé (pas de form login)
  *
  * SESSION MANAGEMENT : STATELESS
  * ─────────────────────────────────
@@ -125,6 +126,16 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-10 : Rate Limiter Filter
+     * ═══════════════════════════════════════════════════════════════════
+     * Injecté AVANT le filtre JWT pour bloquer les requêtes excessives
+     * sur /auth/** dès que possible (avant tout traitement).
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final RateLimiterFilter rateLimiterFilter;
 
     /**
      * Origines CORS autorisées.
@@ -230,6 +241,20 @@ public class SecurityConfig {
                             );
                         })
                 )
+                // ═══════════════════════════════════════════════════════
+                // PHASE 1 — P1-10 : Ajout du RateLimiterFilter AVANT le JWT
+                // ═══════════════════════════════════════════════════════
+                // Ordre d'exécution des filtres :
+                // 1. CorsFilter (géré par Spring automatiquement)
+                // 2. RateLimiterFilter (bloque les requêtes excessives)
+                // 3. JwtAuthenticationFilter (vérifie le JWT)
+                // 4. UsernamePasswordAuthenticationFilter (pas utilisé)
+                //
+                // PRINCIPE : Le rate limiter doit être AVANT le filtre JWT
+                // pour bloquer les requêtes avant tout traitement coûteux
+                // (le parsing JWT est une opération cryptographique).
+                // ═══════════════════════════════════════════════════════
+                .addFilterBefore(rateLimiterFilter, UsernamePasswordAuthenticationFilter.class)
                 // AJOUT DU FILTRE JWT avant le filtre par défaut
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 // HEADERS : autoriser les iframes pour la console H2

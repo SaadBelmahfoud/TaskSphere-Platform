@@ -29,10 +29,54 @@ spring:
 # ═════════════════════════════════════════════
 # JWT : Clé secrète pour la signature des tokens
 # ═════════════════════════════════════════════
-# En production, utiliser une variable d'environnement :
-# java -jar app.jar --jwt.secret=votre-cle-secrete-256-bits
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P0-1 : Fail-Fast en PROD uniquement, defaults en DEV
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRINCIPE :
+# - application.yaml (DEV/H2) : default autorisé car base temporaire
+# - application-postgres.yml (PROD) : PAS de default → crash si manquant
+#
+# POURQUOI UN DEFAULT EN DEV ?
+# → Le développeur clone le repo → ./mvnw spring-boot:run → ça marche
+# → Zéro configuration manuelle nécessaire en local
+# → La clé par défaut est UNIQUEMENT pour H2 en mémoire (pas de vraies données)
+#
+# ⚠️ CETTE CLÉ NE DOIT JAMAIS ÊTRE UTILISÉE EN PRODUCTION !
+# → application-postgres.yml surcharge avec ${JWT_SECRET} (sans default)
+# ═══════════════════════════════════════════════════════════════════
 jwt:
-  secret: ${JWT_SECRET:tasksphere-dev-secret-key-change-me-in-production-256bits}
+  secret: ${JWT_SECRET:dev-local-secret-key-for-tasksphere-minimum-256bits-long}
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P0-1 : init.user.password — default en DEV, fail-fast en PROD
+# ═══════════════════════════════════════════════════════════════════
+#
+# EN DEV (H2) :
+#   ${INIT_USER_PASSWORD:DevTest123!} → si pas de variable, utilise DevTest123!
+#   → Le développeur n'a rien à configurer
+#   → La base H2 est détruite au redémarrage (pas de risque)
+#
+# EN PROD (PostgreSQL) :
+#   ${INIT_USER_PASSWORD} → PAS de default → crash si manquant
+#   → Obligation de configurer un mot de passe fort
+#
+# SPRING RELAXED BINDING :
+#   init.user.password dans YAML → INIT_USER_PASSWORD en variable d'env
+# ═══════════════════════════════════════════════════════════════════
+init:
+  user:
+    password: ${INIT_USER_PASSWORD:DevTest123!}
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P1-5 : Configuration des cookies HttpOnly
+# ═══════════════════════════════════════════════════════════════════
+# En dev : Secure=false (HTTP localhost, les cookies ne passent pas en HTTPS)
+# En prod : Secure=true (HTTPS obligatoire, surchargé dans application-postgres.yml)
+# ═══════════════════════════════════════════════════════════════════
+app:
+  cookie:
+    secure: false
 
 # Port du serveur
 server:
@@ -52,71 +96,25 @@ springdoc:
 # ═══════════════════════════════════════════════════════════════════
 # SPRING BOOT ACTUATOR — Monitoring de l'application
 # ═══════════════════════════════════════════════════════════════════
-#
-# PRINCIPE : Actuator expose des endpoints de monitoring.
 # En développement, on expose tout pour le diagnostic.
-# En production, on n'expose que health et info.
-#
-# ═══════════════════════════════════════════════════════════════════
-# CORRECTION SPRINT 5 — Suppression des health groups readiness/liveness
-# ═══════════════════════════════════════════════════════════════════
-#
-# PROBLÈME :
-#   Les health groups "readiness" et "liveness" référenciaient
-#   "readinessState" et "livenessState" qui nécessitent la dépendance
-#   spring-boot-starter-availability (NON présente dans le projet).
-#   → Erreur au démarrage : "Included health contributor 'readinessState'
-#     in group 'readiness' does not exist"
-#   → L'application CRASH en boucle (restart_policy: unless-stopped)
-#
-# SOLUTION :
-#   Supprimer les health groups readiness/liveness de application.yaml.
-#   Ces groups sont utiles SEULEMENT si on utilise les
-#   Kubernetes Probes (Liveness/Readiness), ce qui nécessite :
-#     1. La dépendance spring-boot-starter-availability dans pom.xml
-#     2. La propriété management.endpoint.health.probes.enabled=true
-#
-#   Sans Kubernetes, les health groups par défaut (db, diskSpace, ping)
-#   sont suffisants pour Docker healthcheck et monitoring.
-#
-#   Pour ajouter les probes Kubernetes plus tard :
-#     - Ajouter la dépendance dans tasksphere-core/pom.xml :
-#       <dependency>
-#           <groupId>org.springframework.boot</groupId>
-#           <artifactId>spring-boot-starter-availability</artifactId>
-#       </dependency>
-#     - Ajouter dans application.yaml :
-#       management:
-#         endpoint:
-#           health:
-#             probes:
-#               enabled: true
-#             group:
-#               readiness:
-#                 include: readinessState,db
-#               liveness:
-#                 include: livenessState
+# En production (application-postgres.yml), on n'expose que health et info.
 management:
   endpoints:
     web:
       exposure:
-        # En dev : exposer tous les endpoints
         include: health,info,metrics,env,loggers,beans
-      base-path: /actuator  # Chemin de base (défaut)
+      base-path: /actuator
   endpoint:
     health:
-      # Détails complets sur la santé (connexion DB, disk space, etc.)
       show-details: always
     info:
       enabled: true
     metrics:
       enabled: true
-  # Métriques personnalisées
   metrics:
     tags:
       application: ${spring.application.name}
   info:
-    # Construit l'endpoint /actuator/info avec les propriétés info.*
     build:
       enabled: true
     env:

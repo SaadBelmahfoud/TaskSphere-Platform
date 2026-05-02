@@ -1,9 +1,28 @@
-# ═══════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
 # PROFIL TEST — Configuration pour les tests d'intégration
-# ═══════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
 # Ce fichier surcharge application.yaml pour les tests.
 # H2 en mémoire est utilisé (pas de base persistante).
 # Les logs SQL sont désactivés pour alléger la sortie.
+#
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P0-1 : Ajout de init.user.password
+# ═══════════════════════════════════════════════════════════════════
+#
+# PROBLÈME :
+#   P0-1 a supprimé le default de init.user.password :
+#     AVANT : @Value("${init.user.password:password123}")
+#     APRÈS : @Value("${init.user.password}")
+#   → Sans cette propriété dans application-test.yml, les tests
+#     CRASH au démarrage avec :
+#     IllegalArgumentException: Could not resolve placeholder 'init.user.password'
+#
+# SOLUTION :
+#   Définir init.user.password dans le profil test.
+#   En environnement de test, le mot de passe n'a pas pas besoin d'être
+#   fort car la base est en mémoire et détruite après les tests.
+#   Mais il DOIT être défini pour que l'application démarre.
+# ═══════════════════════════════════════════════════════════════════
 
 spring:
   datasource:
@@ -22,6 +41,31 @@ spring:
 
 jwt:
   secret: test-secret-key-for-integration-tests-only-256bits-minimum-length
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — P0-1 : Mot de passe des utilisateurs de test
+# ═══════════════════════════════════════════════════════════════════
+# Ce mot de passe est utilisé par DataInitializer pour créer les
+# utilisateurs de test (saadoune, manager, admin).
+# En environnement de test, un mot de passe simple est acceptable
+# car la base H2 est détruite après l'exécution.
+#
+# NOTE : Les tests d'intégration (AuthControllerIT) utilisent ce
+# même mot de passe pour se connecter lors des tests de login.
+# Si vous le changez ici, changez-le aussi dans les tests.
+# ═══════════════════════════════════════════════════════════════════
+init:
+  user:
+    password: test-password-for-integration-tests
+
+# CORS : origine par défaut pour les tests
+cors:
+  allowed-origins: http://localhost:3000
+
+# Cookies : Secure=false en test (HTTP)
+app:
+  cookie:
+    secure: false
 
 server:
   port: 0                     # Port aléatoire libre (évite les conflits)
