@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Port de sortie (outbound port) pour l'accès aux données des refresh tokens.
@@ -43,12 +44,42 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshTokenEntity
     /**
      * Récupère TOUS les tokens non révoqués (tous utilisateurs confondus).
      *
-     * Convention : findByRevokedFalse → SELECT * FROM refresh_tokens WHERE revoked = false
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — CORRECTION P0-2 : Cette méthode est DÉPRÉCIÉE
+     * ═══════════════════════════════════════════════════════════════════
      *
-     * Utilisé par RefreshTokenService pour chercher un token par hash BCrypt.
-     * On ne peut pas faire de recherche par hash BCrypt directement en SQL
-     * (BCrypt utilise un sel aléatoire à chaque hash), donc on récupère
-     * tous les tokens actifs et on vérifie le hash en Java avec passwordEncoder.matches().
+     * AVANT : Utilisée par verifyRefreshToken() pour charger TOUS les tokens
+     * actifs et itérer avec BCrypt.matches() → O(N) × 100ms = CATASTROPHIQUE
+     *
+     * APRÈS : Remplacée par findByTokenHashAndRevokedFalse() → O(1)
+     * Cette méthode est conservée pour la rétrocompatibilité avec les
+     * anciens tokens qui n'ont pas encore de tokenHash, mais elle ne
+     * devrait plus être utilisée dans le flux nominal.
+     *
+     * @deprecated Utiliser findByTokenHashAndRevokedFalse() à la place
+     * ═══════════════════════════════════════════════════════════════════
      */
+    @Deprecated
     List<RefreshTokenEntity> findByRevokedFalse();
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — CORRECTION P0-2 : Lookup O(1) via token_hash
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PRINCIPE : SHA-256 est déterministe → même token → même hash
+     * → On peut faire un SELECT WHERE token_hash = ? AND revoked = false
+     * → L'index idx_refresh_tokens_token_hash (UNIQUE) garantit O(1)
+     *
+     * TRADUCTION SQL AUTOMATIQUE (Spring Data) :
+     * SELECT * FROM refresh_tokens
+     * WHERE token_hash = ? AND revoked = false
+     * → Utilise l'index idx_refresh_tokens_token_hash
+     * → Retourne 0 ou 1 résultat (UNIQUE constraint)
+     *
+     * @param tokenHash  Le hash SHA-256 du token brut envoyé par le client
+     * @return Optional contenant le token s'il est trouvé et actif
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    Optional<RefreshTokenEntity> findByTokenHashAndRevokedFalse(String tokenHash);
 }

@@ -65,6 +65,36 @@ public class RefreshTokenEntity {
     private String token;
 
     /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — CORRECTION P0-2 : Hash SHA-256 pour lookup O(1)
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PROBLÈME :
+     *   BCrypt est non-déterministe (sel aléatoire) → impossible d'indexer
+     *   → verifyRefreshToken() doit charger TOUS les tokens et itérer → O(N)
+     *
+     * SOLUTION :
+     *   Stocker un hash SHA-256 (déterministe) du token brut.
+     *   SHA-256 produit toujours le même hash pour le même input → indexable.
+     *   Au refresh : SHA-256(rawToken) → SELECT WHERE token_hash = ? → O(1)
+     *
+     * SÉCURITÉ :
+     *   - SHA-256 est une fonction à sens unique → impossible de retrouver
+     *     le token original à partir du hash
+     *   - Le token brut est un UUID (128 bits d'entropie) → attaque par
+     *     dictionnaire impossible
+     *   - Même si un attaquant obtient token_hash, il ne peut pas forger
+     *     un token valide
+     *
+     * @Column(nullable = false) serait idéal mais la migration V7
+     * permet temporairement les NULL pour les tokens existants.
+     * Les NOUVEAUX tokens auront toujours un tokenHash non-null.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    @Column(length = 64, unique = true)
+    private String tokenHash;
+
+    /**
      * Relation vers l'utilisateur propriétaire du token.
      *
      * ═══════════════════════════════════════════════════════════════════

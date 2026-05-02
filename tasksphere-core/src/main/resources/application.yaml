@@ -29,10 +29,30 @@ spring:
 # ═════════════════════════════════════════════
 # JWT : Clé secrète pour la signature des tokens
 # ═════════════════════════════════════════════
-# En production, utiliser une variable d'environnement :
-# java -jar app.jar --jwt.secret=votre-cle-secrete-256-bits
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — CORRECTION P0-1 : Suppression du default JWT_SECRET
+# ═══════════════════════════════════════════════════════════════════
+#
+# AVANT (CRITIQUE — OWASP A07:2021 Security Misconfiguration) :
+#   secret: ${JWT_SECRET:tasksphere-dev-secret-key-change-me-in-production-256bits}
+#   → Si JWT_SECRET n'est pas défini, l'application démarre avec une clé codée en dur
+#   → Cette clé est VISIBLE dans le code source (repo Git public)
+#   → Un attaquant peut forger des tokens JWT valides !
+#   → C'est une FAILLE DE SÉCURITÉ CRITIQUE
+#
+# APRÈS (Fail-Fast) :
+#   secret: ${JWT_SECRET}
+#   → Si JWT_SECRET n'est pas défini → l'application CRASH au démarrage
+#   → C'est le comportement SOUHAITÉ : on préfère un crash qu'une sécurité compromise
+#   → Le dev local DOIT configurer JWT_SECRET dans son .env ou IDE
+#
+# PRINCIPE FAIL-FAST :
+#   En sécurité, il vaut mieux FAIL que FAIL OPEN.
+#   "Fail open" = laisser passer la requête même si la sécurité est incomplète.
+#   "Fail fast" = bloquer immédiatement si la sécurité est incomplète.
+# ═══════════════════════════════════════════════════════════════════
 jwt:
-  secret: ${JWT_SECRET:tasksphere-dev-secret-key-change-me-in-production-256bits}
+  secret: ${JWT_SECRET}
 
 # Port du serveur
 server:

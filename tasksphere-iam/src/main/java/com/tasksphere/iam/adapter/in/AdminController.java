@@ -2,8 +2,10 @@ package com.tasksphere.iam.adapter.in;
 
 import com.tasksphere.iam.domain.UserAdminEvent;
 import com.tasksphere.iam.domain.UserEntity;
+import com.tasksphere.iam.dto.RoleUpdateRequest;
 import com.tasksphere.iam.dto.UserAdminResponse;
 import com.tasksphere.iam.port.out.UserRepository;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -103,6 +105,19 @@ import java.util.Optional;
  *
  *   Le MANAGER peut LIRE la liste (pour l'assignation de tâches)
  *   mais ne peut NI changer les rôles NI activer/désactiver.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 1 — CORRECTION P1-6 : RoleUpdateRequest DTO + @Valid
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT : @RequestBody Map<String, String> request → request.get("role")
+ *   → Aucune validation : "HACKER" passait
+ *   → Vérification manuelle List.of("USER","MANAGER","ADMIN").contains()
+ *
+ * APRÈS : @Valid @RequestBody RoleUpdateRequest request → request.role()
+ *   → @Pattern(regexp = "USER|MANAGER|ADMIN") valide AVANT le contrôleur
+ *   → Plus de vérification manuelle nécessaire
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @RestController
@@ -176,17 +191,23 @@ public class AdminController {
      * PATCH /api/v1/iam/admin/users/{userId}/role
      *
      * Change le rôle d'un utilisateur.
-     * CORPS : { "role": "MANAGER" }
-     * Rôles valides : USER, MANAGER, ADMIN
+     * Rôles valides : USER, MANAGER, ADMIN (validés par @Pattern sur RoleUpdateRequest)
      *
      * AUDIT : Publie un UserAdminEvent(ROLE_CHANGED) capté par Core.
      *
      * ⚠️ ADMIN UNIQUEMENT — Le MANAGER ne peut pas changer les rôles.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-6 : RoleUpdateRequest DTO remplace Map<String, String>
+     * ═══════════════════════════════════════════════════════════════════
+     * La validation du rôle est maintenant dans le DTO via @Pattern.
+     * Plus besoin de vérification manuelle dans le contrôleur.
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PatchMapping("/users/{userId}/role")
     public ResponseEntity<?> updateUserRole(
             @PathVariable String userId,
-            @RequestBody Map<String, String> request,
+            @Valid @RequestBody RoleUpdateRequest request,
             Authentication authentication) {
 
         String role = extractRole(authentication);
@@ -195,11 +216,9 @@ public class AdminController {
                     .body(Map.of("message", "Accès réservé aux administrateurs"));
         }
 
-        String newRole = request.get("role");
-        if (newRole == null || !List.of("USER", "MANAGER", "ADMIN").contains(newRole)) {
-            return ResponseEntity.badRequest()
-                    .body(Map.of("message", "Rôle invalide. Valeurs : USER, MANAGER, ADMIN"));
-        }
+        String newRole = request.role();
+        // La validation du format (USER|MANAGER|ADMIN) est faite par @Pattern
+        // sur RoleUpdateRequest → plus besoin de vérification manuelle ici
 
         Optional<UserEntity> userOpt = userRepository.findById(userId);
         if (userOpt.isEmpty()) {

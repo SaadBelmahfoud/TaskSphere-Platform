@@ -4,7 +4,7 @@ import com.tasksphere.iam.config.security.JwtService;
 import com.tasksphere.iam.config.security.RefreshTokenService;
 import com.tasksphere.iam.domain.RefreshTokenEntity;
 import com.tasksphere.iam.domain.UserEntity;
-import com.tasksphere.iam.dto.RegisterRequest;
+import com.tasksphere.iam.dto.*;
 import com.tasksphere.iam.port.out.UserRepository;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +35,19 @@ import java.util.*;
  * - Pas de vérification email (pour l'instant)
  * - confirmPassword validé côté serveur
  * - Email et username doivent être uniques
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 1 — CORRECTION P1-6 : DTOs typés + @Valid
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT : Map<String, String> pour login, refresh, logout
+ *   → Aucune validation, typage faible, pas de documentation
+ *
+ * APRÈS : DTOs typés (LoginRequest, RefreshTokenRequest, LogoutRequest)
+ *   → @Valid active la validation Jakarta automatique
+ *   → 400 Bad Request avec détails si validation échoue
+ *   → Documentation Swagger auto-générée
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @RestController
@@ -62,11 +75,19 @@ public class AuthController {
      *   → Protection contre l'énumération d'utilisateurs
      * - Le mot de passe n'est jamais retourné au client
      * - Le JWT expire après 1h, le refresh token après 7 jours
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-6 : LoginRequest DTO + @Valid
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : @RequestBody Map<String, String> loginRequest
+     * APRÈS : @Valid @RequestBody LoginRequest loginRequest
+     * → @Email vérifie le format, @NotBlank empêche les champs vides
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/login")
-    public ResponseEntity<Map<String, String>> login(@RequestBody Map<String, String> loginRequest) {
-        String email = loginRequest.get("email");
-        String rawPassword = loginRequest.get("password");
+    public ResponseEntity<Map<String, String>> login(@Valid @RequestBody LoginRequest loginRequest) {
+        String email = loginRequest.email();
+        String rawPassword = loginRequest.password();
         log.info("Tentative de connexion pour: {}", email);
 
         Optional<UserEntity> userOpt = userRepository.findByEmail(email);
@@ -190,14 +211,18 @@ public class AuthController {
      * → Si un refresh token est volé, il ne peut être utilisé qu'une fois.
      * → Le légitime propriétaire se rendra compte que son token ne fonctionne
      *   plus → il devra se reconnecter → l'attaquant est éjecté.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-6 : RefreshTokenRequest DTO + @Valid
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : @RequestBody Map<String, String> request
+     * APRÈS : @Valid @RequestBody RefreshTokenRequest request
+     * → @NotBlank sur refreshToken empêche les requêtes sans token
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/refresh")
-    public ResponseEntity<Map<String, String>> refresh(@RequestBody Map<String, String> request) {
-        String rawRefreshToken = request.get("refreshToken");
-        if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("error", "Refresh token manquant"));
-        }
+    public ResponseEntity<Map<String, String>> refresh(@Valid @RequestBody RefreshTokenRequest request) {
+        String rawRefreshToken = request.refreshToken();
         log.info("Tentative de refresh token");
 
         Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);
@@ -229,14 +254,18 @@ public class AuthController {
      *
      * Révoque TOUS les refresh tokens de l'utilisateur.
      * Le JWT restant expirera naturellement (1h max).
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-6 : LogoutRequest DTO + @Valid
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : @RequestBody Map<String, String> request
+     * APRÈS : @Valid @RequestBody LogoutRequest request
+     * → @NotBlank sur refreshToken
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/logout")
-    public ResponseEntity<Map<String, String>> logout(@RequestBody Map<String, String> request) {
-        String rawRefreshToken = request.get("refreshToken");
-        if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("error", "Refresh token manquant"));
-        }
+    public ResponseEntity<Map<String, String>> logout(@Valid @RequestBody LogoutRequest request) {
+        String rawRefreshToken = request.refreshToken();
         log.info("Tentative de déconnexion");
 
         Optional<RefreshTokenEntity> tokenOpt = refreshTokenService.verifyRefreshToken(rawRefreshToken);

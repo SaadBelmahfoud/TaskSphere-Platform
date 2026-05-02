@@ -38,7 +38,22 @@ services:
     environment:
       POSTGRES_DB: ${DB_NAME:-taskspheredb}
       POSTGRES_USER: ${DB_USERNAME:-tasksphere}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 1 — CORRECTION P0-1 : Fail-Fast pour les secrets Docker
+      # ═══════════════════════════════════════════════════════════════════
+      #
+      # AVANT (CRITIQUE) :
+      #   POSTGRES_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+      #   → Si DB_PASSWORD n'est pas dans le .env, le mot de passe par
+      #     défaut "tasksphere123" est utilisé → faille de sécurité
+      #
+      # APRÈS (Fail-Fast) :
+      #   POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      #   → Si DB_PASSWORD n'est pas défini → docker compose ABANDONNE
+      #     avec un message d'erreur clair
+      #   → PRINCIPE : ${VAR:?message} = si VAR non défini → ERREUR + message
+      # ═══════════════════════════════════════════════════════════════════
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
     ports:
       # Port exposé sur l'hôte : port interne du conteneur
       # Utile pour accéder à la base avec pgAdmin ou DBeaver
@@ -90,13 +105,29 @@ services:
       # Connexion à PostgreSQL (utilise le nom du service "postgres" comme hostname)
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-taskspheredb}
       SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-tasksphere}
-      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 1 — CORRECTION P0-1 : Fail-Fast pour DB_PASSWORD
+      # ═══════════════════════════════════════════════════════════════════
+      # AVANT : SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-tasksphere123}
+      # APRÈS : Fail-Fast si DB_PASSWORD n'est pas défini
+      # ═══════════════════════════════════════════════════════════════════
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
       # SPRINT 5 : DB_HOST pour le profil postgres (utilisé par application-postgres.yml)
       DB_HOST: postgres
-      # Clé secrète JWT (OBLIGATOIRE en production !)
-      JWT_SECRET: ${JWT_SECRET:-tasksphere-prod-secret-key-change-me-in-production-256bits}
-      # Mot de passe de l'utilisateur initial
-      INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:-password123}
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 1 — CORRECTION P0-1 : Fail-Fast pour JWT_SECRET
+      # ═══════════════════════════════════════════════════════════════════
+      # AVANT : JWT_SECRET: ${JWT_SECRET:-tasksphere-prod-secret-key-change-me-in-production-256bits}
+      # APRÈS : Fail-Fast si JWT_SECRET n'est pas défini
+      # ═══════════════════════════════════════════════════════════════════
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 1 — CORRECTION P0-1 : Fail-Fast pour INIT_USER_PASSWORD
+      # ═══════════════════════════════════════════════════════════════════
+      # AVANT : INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:-password123}
+      # APRÈS : Fail-Fast si INIT_USER_PASSWORD n'est pas défini
+      # ═══════════════════════════════════════════════════════════════════
+      INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:?INIT_USER_PASSWORD must be set in .env}
       # SPRINT 5 : CORS — Origines autorisées
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,https://localhost:443}
     depends_on:
@@ -104,25 +135,31 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      # ═══════════════════════════════════════════════════════
-      # CORRECTION — Healthcheck du backend avec curl (pas pg_isready)
-      # ═══════════════════════════════════════════════════════
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 1 — CORRECTION P1-7 : Healthcheck avec wget (pas curl)
+      # ═══════════════════════════════════════════════════════════════════
       #
-      # AVANT (incorrect) :
-      #   pg_isready -U ${DB_USERNAME:-tasksphere} -d ${DB_NAME:-taskspheredb}
-      #   → pg_isready est un outil PostgreSQL, pas disponible dans
-      #     l'image Java du backend !
-      #   → Le healthcheck échoue silencieusement
-      #   → Docker peut marquer le conteneur unhealthy
+      # PROBLÈME :
+      #   L'image eclipse-temurin:17-jre-alpine N'INCLUT PAS curl.
+      #   curl -f http://localhost:8080/actuator/health échoue silencieusement
+      #   car la commande curl n'existe pas dans le conteneur.
+      #   → Docker marque le conteneur unhealthy
+      #   → Les services qui dépendent de ce healthcheck ne démarrent pas
       #
-      # APRÈS (correction) :
-      #   curl -f http://localhost:8080/actuator/health
-      #   → Utilise l'endpoint Actuator de Spring Boot
-      #   → SecurityConfig autorise /actuator/health sans JWT (permitAll)
-      #   → curl est disponible dans l'image Java (ajouté via Dockerfile)
-      #   → Vrai healthcheck applicatif (pas juste vérification DB)
-      # ═══════════════════════════════════════════════════════
-      test: [ "CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1" ]
+      # SOLUTION :
+      #   Alpine Linux inclut wget par défaut (BusyBox wget).
+      #   wget -qO- fait la même chose que curl -f :
+      #   -q = quiet (pas de barre de progression)
+      #   -O- = output vers stdout
+      #   Le code de retour est 0 si HTTP 200, non-zéro sinon.
+      #
+      # PRINCIPE ALPINE vs DEBIAN :
+      #   Alpine Linux est une distribution minimaliste (~5MB).
+      #   Elle inclut wget (BusyBox) mais PAS curl.
+      #   Debian/Ubuntu incluent curl mais PAS toujours wget.
+      #   Le Dockerfile utilise déjà wget pour son propre HEALTHCHECK.
+      # ═══════════════════════════════════════════════════════════════════
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1" ]
       interval: 30s
       timeout: 5s
       retries: 3

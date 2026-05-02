@@ -1,6 +1,7 @@
 package com.tasksphere.core.controller;
 
 import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.dto.AssignTaskRequest;
 import com.tasksphere.core.dto.TaskCreateRequest;
 import com.tasksphere.core.dto.TaskStatusRequest;
 import com.tasksphere.core.dto.TaskUpdateRequest;
@@ -251,17 +252,22 @@ public class TaskController {
      *
      * RBAC : Seuls MANAGER et ADMIN peuvent assigner des tâches.
      *
-     * CORPS DE LA REQUÊTE : { "assigneeId": "email@tasksphere.com" }
-     *
-     * Pour désassigner : { "assigneeId": "" } ou { "assigneeId": null }
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — P1-6 : AssignTaskRequest DTO remplace Map<String, String>
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : @RequestBody Map<String, String> request → request.get("assigneeId")
+     *   → Aucune validation du format email
+     * APRÈS : @Valid @RequestBody AssignTaskRequest request
+     *   → @Email valide le format, @NotBlank empêche les valeurs vides
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PatchMapping("/{id}/assign")
     public ResponseEntity<?> assignTask(@PathVariable String id,
-                                        @RequestBody Map<String, String> request,
+                                        @Valid @RequestBody AssignTaskRequest request,
                                         Authentication authentication) {
         String username = authentication.getName();
         String role = extractRole(authentication);
-        String assigneeId = request.get("assigneeId");
+        String assigneeId = request.assigneeId();
 
         if (!"ADMIN".equals(role) && !"MANAGER".equals(role)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)

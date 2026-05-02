@@ -37,7 +37,22 @@ spring:
     # - sslmode : chiffrement SSL (disable en dev, require en prod)
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:taskspheredb}?sslmode=${DB_SSL_MODE:disable}
     username: ${DB_USERNAME:tasksphere}
-    password: ${DB_PASSWORD:tasksphere123}
+    # ═══════════════════════════════════════════════════════════════════
+    # PHASE 1 — CORRECTION P0-1 : Suppression du default DB_PASSWORD
+    # ═══════════════════════════════════════════════════════════════════
+    #
+    # AVANT (CRITIQUE) :
+    #   password: ${DB_PASSWORD:tasksphere123}
+    #   → Le mot de passe "tasksphere123" est codé en dur comme default
+    #   → Si DB_PASSWORD n'est pas défini, l'application se connecte avec ce mot de passe
+    #   → Ce mot de passe est dans le code source → compromis si le repo est public
+    #
+    # APRÈS (Fail-Fast) :
+    #   password: ${DB_PASSWORD}
+    #   → Si DB_PASSWORD n'est pas défini → CRASH au démarrage
+    #   → Le dev/ops DOIT configurer DB_PASSWORD dans .env ou l'environnement
+    # ═══════════════════════════════════════════════════════════════════
+    password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
 
     # ═══════════════════════════════════════════════════════
@@ -108,10 +123,24 @@ spring:
 jwt:
   secret: ${JWT_SECRET}    # ← PAS de valeur par défaut en production !
 
-# Mot de passe de l'utilisateur initial
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 1 — CORRECTION P0-1 : Suppression du default INIT_USER_PASSWORD
+# ═══════════════════════════════════════════════════════════════════
+#
+# AVANT :
+#   password: ${INIT_USER_PASSWORD:password123}
+#   → Le mot de passe "password123" est codé en dur comme default
+#   → Si INIT_USER_PASSWORD n'est pas défini, l'utilisateur initial
+#     est créé avec un mot de passe faible et prévisible
+#
+# APRÈS :
+#   password: ${INIT_USER_PASSWORD}
+#   → Si INIT_USER_PASSWORD n'est pas défini → CRASH au démarrage
+#   → Le dev/ops DOIT configurer un mot de passe fort
+# ═══════════════════════════════════════════════════════════════════
 init:
   user:
-    password: ${INIT_USER_PASSWORD:password123}
+    password: ${INIT_USER_PASSWORD}
 
 # ═══════════════════════════════════════════════════════════════════
 # CORS — Origines autorisées (configurable via variable d'environnement)

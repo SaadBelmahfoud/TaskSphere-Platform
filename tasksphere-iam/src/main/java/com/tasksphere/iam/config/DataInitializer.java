@@ -51,10 +51,24 @@ import org.springframework.stereotype.Component;
  *    → On log les usernames et les rôles, JAMAIS les mots de passe.
  *    → Si on a besoin de vérifier le mot de passe, on le fait manuellement en local.
  *
- * PRINCIPE @Value("${init.user.password:password123}") :
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 1 — CORRECTION P0-1 : Suppression du default password
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT :
+ *   @Value("${init.user.password:password123}")
+ *   → "password123" comme default = faille de sécurité
+ *
+ * APRÈS :
+ *   @Value("${init.user.password}")
+ *   → PAS de default = l'application CRASH si pas configuré
+ *   → Fail-Fast : on préfère un crash à un mot de passe faible
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PRINCIPE @Value("${init.user.password}") :
  * - Lit la propriété "init.user.password" depuis application.yaml ou variable d'env
  * - Si la variable d'environnement INIT_USER_PASSWORD existe → utilise cette valeur
- * - Sinon → utilise "password123" comme valeur par défaut
+ * - Si NI la propriété NI la variable d'env n'existent → IllegalArgumentException au démarrage
  * - NOTE : Spring convertit les variables d'env en propriétés en remplaçant les points par des underscores
  *   et en majuscules : init.user.password → INIT_USER_PASSWORD
  *
@@ -94,13 +108,21 @@ public class DataInitializer implements CommandLineRunner {
     /**
      * Mot de passe des utilisateurs de test.
      * Configurable via variable d'environnement INIT_USER_PASSWORD.
-     * Valeur par défaut : "password123" (pour le dev uniquement).
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 1 — CORRECTION P0-1 : PAS de valeur par défaut
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : @Value("${init.user.password:password123}")
+     * APRÈS : @Value("${init.user.password}")
+     *   → Si la propriété n'est pas définie → crash au démarrage
+     *   → Le dev/ops DOIT fournir cette valeur
+     * ═══════════════════════════════════════════════════════════════════
      *
      * PRINCIPE DE SÉCURITÉ :
      * Ne JAMAIS coder un mot de passe en dur dans le code source.
      * Les variables d'environnement sont le standard de l'industrie pour les secrets.
      */
-    @Value("${init.user.password:password123}")
+    @Value("${init.user.password}")
     private String defaultPassword;
 
     @Override
@@ -147,7 +169,7 @@ public class DataInitializer implements CommandLineRunner {
      */
     private void createUser(String username, String email, String role,
                             String firstName, String lastName) {
-        // Le mot de passe vient de la variable d'environnement (ou valeur par défaut)
+        // Le mot de passe vient de la variable d'environnement (OBLIGATOIRE, plus de default)
         String encodedPassword = passwordEncoder.encode(defaultPassword);
 
         // CORRECTION SPRINT 5 : Constructeur à 11 arguments
