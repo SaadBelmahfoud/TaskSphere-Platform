@@ -2,6 +2,7 @@ package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.domain.event.TaskAuditEvent;
 import com.tasksphere.core.domain.event.TaskCreatedEvent;
 import com.tasksphere.core.port.out.EventPublisherPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
@@ -26,26 +27,34 @@ import java.util.Optional;
  * ROLE : Cœur de la logique métier. Ce service implémente les
  * règles de gestion des tâches, y compris le RBAC et l'audit trail.
  *
- * ARCHITECTURE : Ce service est dans le DOMAINE (package service).
- * Il ne connaît ni HTTP (pas de @RestController), ni JPA (pas de @Entity).
- * Il ne travaille qu'avec des objets du domaine (Task) et des ports.
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 2 — TÂCHE 4 : Audit via événement post-commit
+ * ═══════════════════════════════════════════════════════════════════
  *
- * @Transactional :
- * ─────────────────
- * Chaque méthode publique est transactionnelle par défaut.
- * - @Transactional (écriture) : ouvre une transaction, commit au retour
- * - @Transactional(readOnly = true) : optimisation pour la lecture
- *   → Hibernate peut désactiver le dirty checking (gain de perf)
+ * CHANGEMENT MAJEUR : L'audit n'est PLUS appelé directement.
  *
- * INJECTION DES DÉPENDANCES :
- * ──────────────────────────
- * 1. TaskPersistencePort : port de sauvegarde (interface)
- * 2. EventPublisherPort : port de publication d'événements (TaskCreatedEvent)
- * 3. UserInformationPort : port de récupération d'infos utilisateur (IAM)
- * 4. ActivityLogService : service d'audit log (Section 6)
+ * AVANT : ActivityLogService injecté + appel direct dans chaque méthode
+ *   private final ActivityLogService activityLogService;
+ *   ...
+ *   activityLogService.log(TASK_CREATED, details, username, taskId, taskTitle);
+ *   → Problème : l'audit est dans la MÊME transaction que l'opération.
+ *   → Si l'audit échoue et lève une RuntimeException, la transaction
+ *     est rollback → l'opération métier échoue aussi !
+ *   → Le try-catch dans logActivity() masquait ce problème mais
+ *     ne le résolvait pas (perte silencieuse de logs).
+ *
+ * APRÈS : Publication d'un événement TaskAuditEvent
+ *   eventPublisher.publishAuditEvent(new TaskAuditEvent(...));
+ *   → L'audit est exécuté APRÈS le commit par TaskAuditEventListener.
+ *   → Si l'audit échoue, l'opération métier est DÉJÀ commitée.
+ *   → Pas de try-catch nécessaire dans le service.
+ *   → Fiabilité : l'opération métier ne peut JAMAIS être impactée par l'audit.
+ *
+ * ActivityLogService n'est PLUS injecté dans TaskManager !
+ * (il l'était avant via le champ `activityLogService`).
  *
  * ═══════════════════════════════════════════════════════════════════
- * SECTION 6 — AUDIT TRAIL (Activity Log)
+ * SECTION 6 — AUDIT TRAIL (Activity Log) — ANCIENNE VERSION
  * ═══════════════════════════════════════════════════════════════════
  *
  * PRINCIPE : Audit comme Side Effect
@@ -53,44 +62,10 @@ import java.util.Optional;
  * L'audit n'est PAS la responsabilité principale du TaskManager.
  * C'est un effet secondaire (side effect) de chaque opération d'écriture.
  *
- * On le capture APRÈS chaque opération réussie :
- * 1. L'opération métier s'exécute (création, modification, etc.)
- * 2. Si succès → on logge l'activité via ActivityLogService
- * 3. Si l'audit échoue → on loggue un WARN mais on NE fait PAS échouer l'opération
- *
- * POURQUOI ACTIVITYLOGSERVICE ET PAS ACTIVITYLOGPORT DIRECTEMENT ?
- * ──────────────────────────────────────────────────────────────
- * ActivityLogService est un service d'application (Application Service)
- * qui encapsule la logique de création d'ActivityLog :
- * - Il crée l'objet ActivityLog via la factory method ActivityLog.create()
- * - Il sauvegarde via ActivityLogPort
- *
- * En utilisant ActivityLogService, le TaskManager :
- * - Appelle activityLogService.log(action, description, username, taskId, taskTitle)
- * - Ne connaît PAS ActivityLog.create() ni les détails de construction
- * - Reste centré sur la logique tâche, pas sur le formatage d'audit
- *
- * OPÉRATIONS AUDITÉES :
- * ────────────────────
- * createTask()          → TASK_CREATED
- * updateTask()          → TASK_UPDATED
- * updateTaskStatus()    → TASK_STATUS_CHANGED (avec old → new)
- * assignTask()          → TASK_ASSIGNED ou TASK_UNASSIGNED
- * deleteTask()          → TASK_DELETED
- *
- * POURQUOI TRY-CATCH DANS logActivity() ?
- * ────────────────────────────────────
- * L'audit est un EFFET SECONDAIRE (side effect), pas l'opération principale.
- * Si l'audit échoue (DB indisponible, timeout, etc.) :
- * → On loggue un WARN (pour que l'admin sache qu'il y a un problème)
- * → On NE propage PAS l'exception
- * → L'opération métier (création, modification, etc.) est déjà réussie
- *
- * SANS CE TRY-CATCH :
- * - L'exception remonte dans le service
- * - @Transactional détecte l'exception RuntimeException
- * - La transaction est ROLLBACK → la tâche n'est PAS créée/modifiée
- * - → L'audit a empêché l'opération métier ! C'est inacceptable.
+ * PHASE 2 — TÂCHE 4 : L'audit est désormais un événement asynchrone.
+ * Le TaskManager publie un événement et ne se soucie PLUS de savoir
+ * si l'audit réussit ou échoue. C'est le TaskAuditEventListener
+ * qui gère l'enregistrement réel, dans une transaction indépendante.
  */
 @Slf4j
 @Service
@@ -100,7 +75,23 @@ public class TaskManager {
     private final TaskPersistencePort persistencePort;
     private final EventPublisherPort eventPublisher;
     private final UserInformationPort userInformationPort;
-    private final ActivityLogService activityLogService;
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 2 — TÂCHE 4 : ActivityLogService retiré de l'injection
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * AVANT : ActivityLogService était injecté directement
+     *   private final ActivityLogService activityLogService;
+     *   → Appelé dans chaque méthode d'écriture (createTask, updateTask, etc.)
+     *   → Même transaction → risque de rollback si l'audit échoue
+     *
+     * APRÈS : ActivityLogService n'est PLUS injecté
+     *   → L'audit est publié via eventPublisher.publishAuditEvent()
+     *   → Le TaskAuditEventListener gère l'enregistrement post-commit
+     *   → Transaction indépendante → fiabilité garantie
+     * ═══════════════════════════════════════════════════════════════════
+     */
 
     // ═══════════════════════════════════════════════════════
     // CRÉATION DE TÂCHE
@@ -111,29 +102,6 @@ public class TaskManager {
         return createTask(title, description, currentUsername, null, null, null);
     }
 
-    // ═══════════════════════════════════════════════════════
-    // CRÉATION DE TÂCHE — CORRECTIONS B1, B9, B10 + UUID→EMAIL
-    // ═══════════════════════════════════════════════════════
-
-    /**
-     * Crée une tâche avec tous les paramètres optionnels.
-     *
-     * CORRECTIONS APPORTÉES :
-     * ──────────────────────
-     * B1 : valueOf() maintenant protégé par toUpperCase() + try-catch
-     *      → Plus de crash si le frontend envoie "high" au lieu de "HIGH"
-     *
-     * B9 : Vérification RBAC avant d'assigner (ADMIN/MANAGER seulement)
-     *      → Un USER ne peut plus créer une tâche déjà assignée
-     *
-     * B10 : getUserInfo() retiré (était appelé mais jamais utilisé)
-     *       → Suppression de l'appel DB inutile
-     *
-     * CORRECTION UUID→EMAIL :
-     * Si le frontend envoie un UUID comme assigneeId, on le résout en email
-     * AVANT de le stocker. Sinon, la requête searchTasksForUser (qui compare
-     * assigneeId avec l'email du JWT) ne trouvera JAMAIS la tâche.
-     */
     @Transactional
     public Task createTask(String title, String description, String currentUsername,
                            String priority, LocalDate dueDate, String assigneeId) {
@@ -164,16 +132,7 @@ public class TaskManager {
                 log.warn("RBAC : User {} (rôle: {}) a tenté d'assigner une tâche sans permission",
                         currentUsername, cleanRole);
             } else {
-                // ═══════════════════════════════════════════════════════════
                 // CORRECTION UUID→EMAIL : Résoudre l'assigneeId en email
-                // ═══════════════════════════════════════════════════════════
-                // AVANT : taskToSave.assignTo(assigneeId)
-                //   → Si le frontend envoie un UUID, il est stocké tel quel
-                //   → La query searchTasksForUser ne matche jamais
-                //
-                // APRÈS : taskToSave.assignTo(resolveAssigneeId)
-                //   → L'UUID est résolu en email avant stockage
-                //   → La query searchTasksForUser matche correctement
                 String resolvedAssigneeId = userInformationPort.resolveAssigneeToEmail(assigneeId);
                 taskToSave = taskToSave.assignTo(resolvedAssigneeId);
             }
@@ -182,7 +141,16 @@ public class TaskManager {
         Task savedTask = persistencePort.save(taskToSave);
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
-        // [Section 6] AUDIT : Création de tâche
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 2 — TÂCHE 4 : Audit via événement (post-commit)
+        // ═══════════════════════════════════════════════════════════════════
+        // AVANT : logActivity(TASK_CREATED, currentUsername, details, savedTask.id(), savedTask.title());
+        //   → Appel direct à ActivityLogService → même transaction → risque de rollback
+        //
+        // APRÈS : eventPublisher.publishAuditEvent(new TaskAuditEvent(...))
+        //   → Publication d'un événement → TaskAuditEventListener l'enregistre
+        //     APRÈS le commit de la transaction → fiabilité garantie
+        // ═══════════════════════════════════════════════════════════════════
         StringBuilder details = new StringBuilder("Tâche créée");
         if (savedTask.priority() != Task.TaskPriority.MEDIUM) {
             details.append(" avec priorité ").append(savedTask.priority().name());
@@ -190,8 +158,13 @@ public class TaskManager {
         if (savedTask.assigneeId() != null) {
             details.append(" assignée à ").append(savedTask.assigneeId());
         }
-        logActivity(ActivityLog.Action.TASK_CREATED,
-                currentUsername, details.toString(), savedTask.id(), savedTask.title());
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TASK_CREATED,
+                details.toString(),
+                currentUsername,
+                savedTask.id(),
+                savedTask.title()
+        ));
 
         log.info("SERVICE : Tâche créée avec succès (id: {}, user: {}, priority: {}, assignee: {})",
                 savedTask.id(), currentUsername, savedTask.priority(), savedTask.assigneeId());
@@ -205,19 +178,9 @@ public class TaskManager {
     @Transactional(readOnly = true)
     public Page<Task> getMyTasks(String currentUsername, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        // CORRECTION BUG 1 : Utiliser findByUserIsOwnerOrAssignee au lieu de findByUserId
         return persistencePort.findByUserIsOwnerOrAssignee(currentUsername, pageable);
     }
 
-    /**
-     * ═══════════════════════════════════════════════════════════
-     * RECHERCHE DYNAMIQUE AVEC FILTRES + RBAC
-     * ═══════════════════════════════════════════════════════════
-     *
-     * LOGIQUE RBAC POUR LA RECHERCHE :
-     * ADMIN/MANAGER → Recherche GLOBALE (voient toutes les tâches)
-     * USER → Recherche LIMITÉE aux tâches créées + assignées
-     */
     @Transactional(readOnly = true)
     public Page<Task> searchTasks(TaskPersistencePort.TaskSearchCriteria criteria,
                                   int page, int size, String sortBy, String sortDir,
@@ -285,9 +248,14 @@ public class TaskManager {
 
         Task savedTask = persistencePort.save(updatedTask);
 
-        // [Section 6] AUDIT
-        logActivity(ActivityLog.Action.TASK_UPDATED,
-                currentUsername, details.toString(), taskId, savedTask.title());
+        // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TASK_UPDATED,
+                details.toString(),
+                currentUsername,
+                taskId,
+                savedTask.title()
+        ));
 
         return Optional.of(savedTask);
     }
@@ -313,10 +281,15 @@ public class TaskManager {
         Task.TaskStatus status = Task.TaskStatus.valueOf(newStatus);
         Task savedTask = persistencePort.save(existingTask.updateStatus(status));
 
-        // [Section 6] AUDIT : Transition old → new
+        // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
         String details = String.format("Statut changé : %s → %s", oldStatus.name(), status.name());
-        logActivity(ActivityLog.Action.TASK_STATUS_CHANGED,
-                currentUsername, details, taskId, savedTask.title());
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TASK_STATUS_CHANGED,
+                details,
+                currentUsername,
+                taskId,
+                savedTask.title()
+        ));
 
         return Optional.of(savedTask);
     }
@@ -325,26 +298,6 @@ public class TaskManager {
     // ASSIGNATION DE TÂCHE (MANAGER/ADMIN uniquement)
     // ═══════════════════════════════════════════════════════
 
-    /**
-     * ═══════════════════════════════════════════════════════════
-     * CORRECTION UUID→EMAIL : Résoudre l'assigneeId avant stockage
-     * ═══════════════════════════════════════════════════════════
-     *
-     * PROBLÈME :
-     * Le frontend envoie parfois un UUID (user.id) comme assigneeId
-     * au lieu d'un email (user.email). Le backend stocke ce UUID
-     * directement dans assignee_id, mais les requêtes JPQL comparent
-     * assigneeId avec l'email du JWT.
-     * UUID ≠ email → la query ne matche JAMAIS → les tâches assignées
-     * n'apparaissent pas pour l'utilisateur assigné.
-     *
-     * SOLUTION :
-     * Avant de stocker l'assigneeId, on appelle
-     * userInformationPort.resolveAssigneeToEmail() qui :
-     * 1. Si c'est un email (contient @) → le retourne tel quel
-     * 2. Si c'est un UUID → cherche l'email correspondant via IAM
-     * 3. Si la résolution échoue → retourne l'input original (fallback)
-     */
     @Transactional
     public Optional<Task> assignTask(String taskId, String currentUsername,
                                      String currentRole, String assigneeId) {
@@ -360,15 +313,23 @@ public class TaskManager {
 
         Task savedTask = persistencePort.save(existingTask.assignTo(effectiveAssigneeId));
 
-        // [Section 6] AUDIT : TASK_ASSIGNED ou TASK_UNASSIGNED
+        // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
         if (effectiveAssigneeId != null) {
-            logActivity(ActivityLog.Action.TASK_ASSIGNED,
-                    currentUsername, "Tâche assignée à " + effectiveAssigneeId,
-                    taskId, savedTask.title());
+            eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                    ActivityLog.Action.TASK_ASSIGNED,
+                    "Tâche assignée à " + effectiveAssigneeId,
+                    currentUsername,
+                    taskId,
+                    savedTask.title()
+            ));
         } else {
-            logActivity(ActivityLog.Action.TASK_UNASSIGNED,
-                    currentUsername, "Assignation retirée",
-                    taskId, savedTask.title());
+            eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                    ActivityLog.Action.TASK_UNASSIGNED,
+                    "Assignation retirée",
+                    currentUsername,
+                    taskId,
+                    savedTask.title()
+            ));
         }
 
         return Optional.of(savedTask);
@@ -383,28 +344,49 @@ public class TaskManager {
         if ("ADMIN".equals(currentRole)) {
             if (persistencePort.findById(taskId).isEmpty()) return false;
             persistencePort.softDelete(taskId);
-            logActivity(ActivityLog.Action.TASK_DELETED,
-                    currentUsername, "Tâche supprimée (ADMIN)", taskId, null);
+            // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
+            eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                    ActivityLog.Action.TASK_DELETED,
+                    "Tâche supprimée (ADMIN)",
+                    currentUsername,
+                    taskId,
+                    null
+            ));
             return true;
         }
         if (persistencePort.findByIdAndUserId(taskId, currentUsername).isEmpty()) return false;
         persistencePort.softDelete(taskId);
-        logActivity(ActivityLog.Action.TASK_DELETED,
-                currentUsername, "Tâche supprimée par son créateur", taskId, null);
+        // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TASK_DELETED,
+                "Tâche supprimée par son créateur",
+                currentUsername,
+                taskId,
+                null
+        ));
         return true;
     }
 
-    // ═══════════════════════════════════════════════════════
-    // [Section 6] AUDIT TRAIL — Méthode utilitaire privée
-    // ═══════════════════════════════════════════════════════
-
-    private void logActivity(ActivityLog.Action action, String actorEmail,
-                             String details, String taskId, String taskTitle) {
-        try {
-            activityLogService.log(action, details, actorEmail, taskId, taskTitle);
-        } catch (Exception e) {
-            log.warn("AUDIT TRAIL : Échec de l'enregistrement — [action={}, actor={}] — Cause : {}",
-                    action, actorEmail, e.getMessage());
-        }
-    }
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 2 — TÂCHE 4 : Méthode logActivity() RETIRÉE
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * AVANT : Cette méthode privée encapsulait le try-catch autour
+     * de activityLogService.log(). Elle masquait les erreurs d'audit.
+     *
+     * private void logActivity(ActivityLog.Action action, String actorEmail,
+     *                          String details, String taskId, String taskTitle) {
+     *     try {
+     *         activityLogService.log(action, details, actorEmail, taskId, taskTitle);
+     *     } catch (Exception e) {
+     *         log.warn("AUDIT TRAIL : Échec de l'enregistrement — ...");
+     *     }
+     * }
+     *
+     * APRÈS : Cette méthode est SUPPRIMÉE. L'audit est publié via
+     * eventPublisher.publishAuditEvent(new TaskAuditEvent(...)).
+     * Le try-catch est maintenant dans TaskAuditEventListener.
+     * ═══════════════════════════════════════════════════════════════════
+     */
 }

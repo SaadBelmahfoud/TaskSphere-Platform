@@ -1,54 +1,69 @@
 package com.tasksphere.core.controller;
 
-import com.tasksphere.core.domain.ActivityLog;
-import com.tasksphere.core.dto.ActivityLogResponse;
 import com.tasksphere.core.dto.DashboardStatsResponse;
-import com.tasksphere.core.port.out.ActivityLogPort;
-import com.tasksphere.core.port.out.TaskPersistencePort;
+import com.tasksphere.core.service.DashboardService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.*;
-
-import java.time.DayOfWeek;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.temporal.TemporalAdjusters;
-import java.util.List;
-import java.util.Map;
 
 /**
  * ═══════════════════════════════════════════════════════════════════
  * ADAPTATEUR D'ENTRÉE : DashboardController (API REST Dashboard)
  * ═══════════════════════════════════════════════════════════════════
  *
- * NOUVEAU — CONCEPT DASHBOARD :
- * ──────────────────────────────
- * Un dashboard agrège des données de PLUSIEURS sources pour donner
- * une vue d'ensemble au utilisateur. C'est un pattern classique
- * dans les applications de gestion (project management, CRM, etc.)
- *
  * ENDPOINT :
  * ──────────
  * GET /api/v1/dashboard/stats → DashboardStatsResponse
  *
- * DONNÉES AGRÉGÉES :
- * ──────────────────
- * 1. totalTasks : compteur global de tâches actives
- * 2. tasksByStatus : Map {TODO: N, DOING: N, DONE: N} → PieChart
- * 3. tasksByPriority : Map {LOW: N, MEDIUM: N, HIGH: N, CRITICAL: N} → BarChart
- * 4. recentActivities : 10 dernières actions → Timeline
- * 5. tasksCreatedThisWeek : compteur de la semaine → Card
- * 6. tasksCompletedThisWeek : compteur de la semaine → Card
- * 7. overdueTasks : tâches en retard → Card
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 2 — TÂCHE 1 : Refactoring — Extraction vers DashboardService
+ * ═══════════════════════════════════════════════════════════════════
  *
- * RBAC :
- * ──────
- * ADMIN/MANAGER → voient les stats GLOBALES (toutes les tâches)
- * USER → voient les stats de leurs tâches + tâches assignées
- * Le filtre est appliqué via les méthodes du TaskPersistencePort.
+ * AVANT :
+ *   DashboardController contenait TOUTE la logique métier :
+ *   - Calcul du startOfWeek
+ *   - Extraction du rôle depuis Authentication
+ *   - Appels directs à TaskPersistencePort et ActivityLogPort
+ *   - Assemblage du DashboardStatsResponse
+ *
+ *   PROBLÈME : Violation du SRP (Single Responsibility Principle).
+ *   Un contrôleur est un adaptateur d'entrée HTTP, pas un service métier.
+ *   Il ne doit ni calculer, ni orchestrer — il délègue.
+ *
+ * APRÈS :
+ *   DashboardController ne fait PLUS que :
+ *   1. Recevoir l'Authentication (injectée par Spring Security)
+ *   2. Appeler dashboardService.getDashboardStats(authentication)
+ *   3. Retourner ResponseEntity.ok(response)
+ *
+ *   TOUTE la logique métier est dans DashboardService.
+ *   Le contrôleur est maintenant un "thin controller" (contrôleur mince).
+ *
+ * PRINCIPE THIN CONTROLLER / FAT SERVICE :
+ * ┌──────────────────────────────────────────────────────────────┐
+ * │  CONTRÔLEUR (thin) :                                         │
+ * │  - Reçoit la requête HTTP                                    │
+ * │  - Extrait les paramètres bruts                              │
+ * │  - Appelle le service                                        │
+ * │  - Retourne la réponse HTTP                                  │
+ * │  → AUCUNE logique métier                                     │
+ * │                                                               │
+ * │  SERVICE (fat) :                                              │
+ * │  - Contient la logique métier                                │
+ * │  - Orchestre les appels aux ports                            │
+ * │  - Calcule, agrège, transforme                               │
+ * │  → TOUTE la logique métier                                   │
+ * └──────────────────────────────────────────────────────────────┘
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 2 — TÂCHE 3 (ISP) : Injection de TaskDashboardPort
+ * ═══════════════════════════════════════════════════════════════════
+ * Le contrôleur n'injecte PLUS directement TaskPersistencePort.
+ * C'est DashboardService qui injecte TaskDashboardPort (le port ISP-split).
+ * Le contrôleur ne connaît QUE DashboardService → couplage minimal.
+ * ═══════════════════════════════════════════════════════════════════
  *
  * CONNEXION FRONTEND ↔ BACKEND :
  * ─────────────────────────────────
@@ -61,68 +76,56 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class DashboardController {
 
-    private final TaskPersistencePort taskPersistencePort;
-    private final ActivityLogPort activityLogPort;
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 2 — TÂCHE 1 : Remplacement des dépendances
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * AVANT : Deux ports injectés directement dans le contrôleur
+     *   private final TaskPersistencePort taskPersistencePort;
+     *   private final ActivityLogPort activityLogPort;
+     *
+     * APRÈS : Un seul service injecté (Facade Pattern)
+     *   private final DashboardService dashboardService;
+     *
+     * AVANTAGE : Le contrôleur ne connaît ni les ports, ni les détails
+     * d'implémentation. Si le DashboardService change ses dépendances
+     * internes (ajoute un port, en retire un), le contrôleur n'est PAS impacté.
+     * C'est le principe de l'encapsulation : le service cache les détails.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final DashboardService dashboardService;
 
     /**
      * GET /api/v1/dashboard/stats
      *
-     * Agrège les statistiques pour le Dashboard.
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 2 — TÂCHE 1 : Méthode simplifiée
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * AVANT (15 lignes de logique dans le contrôleur) :
+     *   - Extraction du rôle
+     *   - Calcul du startOfWeek
+     *   - 7 appels aux ports
+     *   - Assemblage du DTO
+     *
+     * APRÈS (1 ligne — délégation au service) :
+     *   - Appel à dashboardService.getDashboardStats(authentication)
+     *   - Le service retourne le DTO prêt à l'emploi
+     *
+     * PRINCIPE : Le contrôleur est un "pass-through" (relais).
+     * Il ne fait que recevoir et transmettre — aucune logique.
+     * ═══════════════════════════════════════════════════════════════════
      */
     @GetMapping("/stats")
     public ResponseEntity<DashboardStatsResponse> getDashboardStats(
             Authentication authentication) {
 
-        String username = authentication.getName();
-        String role = extractRole(authentication);
-        log.info("CONTROLLER : GET /dashboard/stats — {} (rôle: {})", username, role);
+        log.info("CONTROLLER : GET /dashboard/stats — {}", authentication.getName());
 
-        boolean isAdminOrManager = "ADMIN".equals(role) || "MANAGER".equals(role);
-
-        // 1. Compteur total de tâches
-        long totalTasks = taskPersistencePort.countActiveTasks(isAdminOrManager ? null : username);
-
-        // 2. Répartition par statut
-        Map<String, Long> tasksByStatus = taskPersistencePort.countByStatus(isAdminOrManager ? null : username);
-
-        // 3. Répartition par priorité
-        Map<String, Long> tasksByPriority = taskPersistencePort.countByPriority(isAdminOrManager ? null : username);
-
-        // 4. Tâches créées cette semaine
-        LocalDateTime startOfWeek = LocalDate.now()
-                .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-                .atStartOfDay();
-        long tasksCreatedThisWeek = taskPersistencePort.countCreatedAfter(
-                isAdminOrManager ? null : username, startOfWeek);
-
-        // 5. Tâches complétées cette semaine
-        long tasksCompletedThisWeek = taskPersistencePort.countCompletedAfter(
-                isAdminOrManager ? null : username, startOfWeek);
-
-        // 6. Tâches en retard (dueDate < aujourd'hui ET status ≠ DONE)
-        long overdueTasks = taskPersistencePort.countOverdueTasks(isAdminOrManager ? null : username);
-
-        // 7. Activités récentes
-        List<ActivityLog> recentLogs = activityLogPort.findRecent(10);
-        List<ActivityLogResponse> recentActivities = recentLogs.stream()
-                .map(ActivityLogResponse::fromDomain)
-                .toList();
-
-        DashboardStatsResponse response = new DashboardStatsResponse(
-                totalTasks, tasksByStatus, tasksByPriority,
-                recentActivities, tasksCreatedThisWeek,
-                tasksCompletedThisWeek, overdueTasks
-        );
+        // DÉLÉGATION TOTALE au service — thin controller pattern
+        DashboardStatsResponse response = dashboardService.getDashboardStats(authentication);
 
         return ResponseEntity.ok(response);
-    }
-
-    private String extractRole(Authentication authentication) {
-        return authentication.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .filter(a -> a.startsWith("ROLE_"))
-                .map(a -> a.replace("ROLE_", ""))
-                .findFirst()
-                .orElse("USER");
     }
 }

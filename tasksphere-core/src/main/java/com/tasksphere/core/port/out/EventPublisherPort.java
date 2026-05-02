@@ -1,13 +1,49 @@
 package com.tasksphere.core.port.out;
 
+import com.tasksphere.core.domain.event.TaskAuditEvent;
 import com.tasksphere.core.domain.event.TaskCreatedEvent;
 
-/*
- * LE PORT DE PUBLICATION (Output Port).
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ * PORT SORTANT : Publication d'événements (Contrat du domaine)
+ * ═══════════════════════════════════════════════════════════════════
  *
- * Le Service utilise ce mégaphone sans savoir qui est à l'autre bout.
- * Est-ce un système de fichier ? Kafka ? Un simple logger ? Il s'en fout.
+ * PRINCIPE DDD (Domain-Driven Design) :
+ * Le domaine publie des événements pour signaler que quelque chose
+ * s'est produit. Les adaptateurs d'entrée (listeners) réagissent.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 2 — TÂCHE 4 : Ajout de publishAuditEvent()
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * NOUVELLE MÉTHODE : publishAuditEvent(TaskAuditEvent)
+ * → Publie un événement d'audit qui sera traité APRÈS le commit
+ *   de la transaction métier par TaskAuditEventListener.
+ * → Cela garantit que l'audit ne peut JAMAIS faire échouer
+ *   l'opération métier (fiabilité).
  */
 public interface EventPublisherPort {
+
+    /**
+     * Publie un événement de création de tâche.
+     * Utilisé pour déclencher des actions asynchrones (notifications, etc.)
+     * après la création d'une tâche.
+     */
     void publishTaskCreated(TaskCreatedEvent event);
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 2 — TÂCHE 4 : Publication d'un événement d'audit
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * Publie un événement d'audit qui sera traité par
+     * TaskAuditEventListener APRÈS le commit de la transaction.
+     *
+     * Le listener utilise @TransactionalEventListener(phase = AFTER_COMMIT)
+     * pour garantir que l'audit n'est enregistré QUE si l'opération
+     * métier a réussi et est commitée.
+     *
+     * @param event L'événement d'audit contenant les détails de l'action
+     */
+    void publishAuditEvent(TaskAuditEvent event);
 }

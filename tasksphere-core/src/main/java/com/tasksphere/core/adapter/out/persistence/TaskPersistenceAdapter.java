@@ -1,6 +1,7 @@
 package com.tasksphere.core.adapter.out.persistence;
 
 import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.port.out.TaskDashboardPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,111 +23,66 @@ import java.util.Optional;
  * L'adaptateur implémente le Port (interface du domaine) et traduit
  * les appels en opérations JPA concrètes.
  *
- * Schéma de flux :
- * Controller → Service (TaskManager) → Port (TaskPersistencePort) → Adaptateur (THIS)
- *                                                                       ↓
- *                                                                  Repository (JPA)
- *                                                                       ↓
- *                                                                    Base de données
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 2 — TÂCHE 3 : Implémentation des DEUX ports (ISP)
+ * ═══════════════════════════════════════════════════════════════════
  *
- * Le domaine n'a AUCUNE idée que JPA existe. Il ne voit que l'interface.
- * Si on change de BDD demain (PostgreSQL, MongoDB), seul cet adaptateur change.
- * Le service et le domaine restent identiques → zéro impact.
+ * AVANT : TaskPersistenceAdapter implements TaskPersistencePort
+ * → UNE interface avec 20+ méthodes
  *
- * PRINCIPE @Component :
- * Spring détecte automatiquement cette classe et la crée comme bean.
- * Spring l'injecte dans le TaskManager qui dépend de TaskPersistencePort.
- * C'est le mécanisme d'injection de dépendance (DI).
+ * APRÈS : TaskPersistenceAdapter
+ *         implements TaskPersistencePort, TaskDashboardPort
+ * → DEUX interfaces séparées (ISP)
+ * → MÊME implémentation physique
  *
- * PRINCIPE DE CONVERSION :
- * - Domaine → JPA : new TaskEntity(task) dans save() (INSERT uniquement)
- * - JPA → Domaine : entity.toDomain() dans les méthodes de lecture
- * Ces conversions sont MANUELLES et EXPLICITES pour garder le contrôle total.
+ * POURQUOI C'EST VALIDE ?
+ * - Java permet d'implémenter plusieurs interfaces
+ * - L'adaptateur a UNE implémentation mais DEUX contrats
+ * - Spring injecte le bon port selon la dépendance :
+ *   - TaskManager → TaskPersistencePort (CRUD)
+ *   - DashboardService → TaskDashboardPort (comptage)
+ * - Il n'y a QU'UN SEUL bean TaskPersistenceAdapter en mémoire
  *
- * RAPPEL IMPORTANT SUR LA SESSION HIBERNATE :
- * ┌──────────────────────────────────────────────────────────────────┐
- * │ La Session Hibernate (ou Persistence Context) est un cache L1    │
- * │ qui stocke toutes les entités chargées pendant une transaction.  │
- * │                                                                  │
- * │ RÈGLE D'OR : Il ne peut y avoir qu'UN SEUL objet par identifiant│
- * │ dans la Session. Si tu essaies d'ajouter un 2ème objet avec le   │
- * │ même id → NonUniqueObjectException !                             │
- * │                                                                  │
- * │ Quand tu modifies les champs d'une entité MANAGED, Hibernate     │
- * │ détecte automatiquement les changements (dirty checking) et      │
- * │ génère l'UPDATE SQL au commit de la transaction.                 │
- * └──────────────────────────────────────────────────────────────────┘
+ * SCHÉMA D'INJECTION SPRING :
+ * ┌─────────────────────────────────────────────────────┐
+ * │  TaskPersistenceAdapter (UN bean Spring)            │
+ * │    implements TaskPersistencePort                    │
+ * │    implements TaskDashboardPort                      │
+ * │                                                      │
+ * │  TaskManager injecte TaskPersistencePort ──────┐     │
+ * │  DashboardService injecte TaskDashboardPort ──┐│     │
+ * │                                                ││     │
+ * │                   MÊME BEAN ───────────────────┘│     │
+ * └─────────────────────────────────────────────────┘     │
+ *                                                          │
+ * Spring détecte que le bean TaskPersistenceAdapter         │
+ * implémente LES DEUX interfaces et l'injecte               │
+ * pour les deux dépendances.                                │
+ * └──────────────────────────────────────────────────────┘
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class TaskPersistenceAdapter implements TaskPersistencePort {
+public class TaskPersistenceAdapter implements TaskPersistencePort, TaskDashboardPort {
 
     private final TaskRepository taskRepository;
+
+    // ═══════════════════════════════════════════════════════
+    // MÉTHODES CRUD + RECHERCHE (TaskPersistencePort)
+    // ═══════════════════════════════════════════════════════
 
     /**
      * Sauvegarder une tâche (création ou mise à jour).
      *
      * FLUX : Task (domaine) → TaskEntity (JPA) → BDD
      *
-     * ╔══════════════════════════════════════════════════════════════════╗
-     * ║  PRINCIPE DU DOUBLE CHEMIN (INSERT vs UPDATE)                   ║
-     * ╠══════════════════════════════════════════════════════════════════╣
-     * ║                                                                  ║
-     * ║  CRÉATION (INSERT) :                                             ║
-     * ║  1. L'entité n'existe pas en BDD                                 ║
-     * ║  2. On crée un nouveau TaskEntity(task) avec isNew = true         ║
-     * ║  3. repository.save() → em.persist() → INSERT SQL                 ║
-     * ║                                                                  ║
-     * ║  MISE À JOUR (UPDATE) :                                           ║
-     * ║  1. L'entité existe déjà en BDD                                  ║
-     * ║  2. On récupère l'entité MANAGÉE depuis le repository             ║
-     * ║  3. On modifie ses champs via les setters                        ║
-     * ║  4. Dirty Checking de Hibernate → UPDATE SQL au commit            ║
-     * ║                                                                  ║
-     * ╚══════════════════════════════════════════════════════════════════╝
+     * CHEMIN DUAL (INSERT vs UPDATE) :
+     * - Si l'entité existe → récupérer l'entité MANAGÉE → setters → dirty checking → UPDATE
+     * - Si nouvelle → new TaskEntity(task) avec isNew=true → INSERT
      *
-     * ╔══════════════════════════════════════════════════════════════════╗
-     * ║  POURQUOI ON NE FAIT PAS "new TaskEntity(task)" POUR UPDATE ?   ║
-     * ╠══════════════════════════════════════════════════════════════════╣
-     * ║                                                                  ║
-     * ║  Bug NonUniqueObjectException (AVANT la correction) :            ║
-     * ║                                                                  ║
-     * ║  1. updateTask() appelle findByIdAndUserId()                      ║
-     * ║     → Hibernate charge l'entité dans son "Session" (L1 cache)    ║
-     * ║     → L'entité est maintenant MANAGÉE (traquée par Hibernate)     ║
-     * ║                                                                  ║
-     * ║  2. save() crée un NOUVEAU TaskEntity(task) avec                  ║
-     * ║     le MÊME id mais isNew = true                                 ║
-     * ║                                                                  ║
-     * ║  3. repository.save() fait em.persist() (car isNew=true)         ║
-     * ║     → persist() essaie d'ajouter l'entité à la Session           ║
-     * ║                                                                  ║
-     * ║  4. Hibernate voit 2 objets avec le même id dans la Session      ║
-     * ║     → 💥 NonUniqueObjectException !                              ║
-     * ║                                                                  ║
-     * ║  SOLUTION APPLIQUÉE :                                             ║
-     * ║  Récupérer l'entité MANAGÉE déjà présente dans la Session         ║
-     * ║  et modifier ses champs via les setters.                         ║
-     * ║  Hibernate détecte les changements automatiquement               ║
-     * ║  (dirty checking) et génère l'UPDATE SQL au commit.              ║
-     * ║                                                                  ║
-     * ╚══════════════════════════════════════════════════════════════════╝
-     *
-     * PRINCIPE DU DIRTY CHECKING (rappel) :
-     * Hibernate compare l'état actuel de l'entité managée avec son état
-     * au moment du chargement (snapshot). Si des champs ont changé,
-     * il génère automatiquement un UPDATE SQL à la fin de la transaction
-     * (avant le commit). C'est pour ça qu'on n'a pas besoin d'appeler
-     * explicitement repository.save() pour les entités managées quand
-     * on modifie leurs champs — Hibernate s'en occupe au flush.
-     *
-     * PRINCIPE DU L1 CACHE (rappel) :
-     * Quand on appelle taskRepository.findByIdAndDeletedAtIsNull(task.id()),
-     * Hibernate regarde D'ABORD dans son L1 cache. Si l'entité y est
-     * déjà (parce qu'elle a été chargée plus tôt dans la même transaction
-     * par findByIdAndUserId()), Hibernate retourne cette MÊME instance
-     * sans faire de SELECT supplémentaire. C'est le first-level cache.
+     * PRINCIPE DU DIRTY CHECKING :
+     * Hibernate compare l'état actuel de l'entité managée avec son snapshot.
+     * Si des champs ont changé → UPDATE SQL automatique au commit.
      */
     @Override
     public Task save(Task task) {
@@ -135,9 +91,7 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         Optional<TaskEntity> existingEntity = taskRepository.findByIdAndDeletedAtIsNull(task.id());
 
         if (existingEntity.isPresent()) {
-            // ══════════════════════════════════════════════════════════
-            //  CHEMIN UPDATE : L'entité existe déjà en BDD
-            // ══════════════════════════════════════════════════════════
+            // CHEMIN UPDATE : L'entité existe déjà en BDD
             TaskEntity managedEntity = existingEntity.get();
             managedEntity.setTitle(task.title());
             managedEntity.setDescription(task.description());
@@ -145,21 +99,13 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
             managedEntity.setPriority(task.priority());
             managedEntity.setDueDate(task.dueDate());
             managedEntity.setCompletedAt(task.completedAt());
-            // CORRECTION : Ajout du setAssigneeId pour persister l'assignation
             managedEntity.setAssigneeId(task.assigneeId());
-
-            // Champs immuables — ON NE LES MODIFIE PAS après création :
-            // - createdAt : la date de création ne change jamais
-            // - deletedAt : géré uniquement par softDelete()
-            // - userId : le propriétaire ne change pas (ownership)
 
             log.debug("ADAPTATEUR JPA : Mise à jour de la tâche existante '{}'", task.title());
             return managedEntity.toDomain();
 
         } else {
-            // ══════════════════════════════════════════════════════════
-            //  CHEMIN INSERT : Nouvelle tâche, pas encore en BDD
-            // ══════════════════════════════════════════════════════════
+            // CHEMIN INSERT : Nouvelle tâche, pas encore en BDD
             TaskEntity entity = new TaskEntity(task);
             TaskEntity saved = taskRepository.save(entity);
             log.debug("ADAPTATEUR JPA : Nouvelle tâche créée '{}'", task.title());
@@ -174,16 +120,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
-    /**
-     * CORRECTION BUG 1 — Recherche par ID + (propriétaire OU assignataire)
-     *
-     * Délègue au Repository qui utilise la @Query JPQL :
-     * WHERE id = :id AND deletedAt IS NULL
-     *   AND (userId = :username OR assigneeId = :username)
-     *
-     * Cela permet à un USER assignataire d'accéder à la tâche,
-     * pas seulement au créateur.
-     */
     @Override
     public Optional<Task> findByIdAndUserIsOwnerOrAssignee(String id, String username) {
         log.debug("ADAPTATEUR JPA : Recherche tâche {} pour utilisateur {} (owner OR assignee)", id, username);
@@ -191,26 +127,10 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
                 .map(TaskEntity::toDomain);
     }
 
-    /**
-     * CORRECTION BUG 1 — Liste des tâches d'un utilisateur (propriétaire OU assignataire)
-     *
-     * Délègue au Repository qui utilise la méthode dérivée :
-     * findByUserIdOrAssigneeIdAndDeletedAtIsNullOrderByCreatedAtDesc
-     *
-     * Spring Data JPA traduit en :
-     * SELECT t FROM TaskEntity t
-     * WHERE (t.userId = :userId OR t.assigneeId = :assigneeId)
-     *   AND t.deletedAt IS NULL
-     * ORDER BY t.createdAt DESC
-     *
-     * NOTE : On passe le MÊME username pour userId et assigneeId car on
-     * veut les tâches où l'utilisateur est IMPLIQUÉ (créateur OU assignataire).
-     */
     @Override
     public Page<Task> findByUserIsOwnerOrAssignee(String username, Pageable pageable) {
         log.debug("ADAPTATEUR JPA : Recherche des tâches de l'utilisateur {} (owner OR assignee)", username);
-        return taskRepository.findByUserIsOwnerOrAssignee(
-                        username, username, pageable)
+        return taskRepository.findByUserIsOwnerOrAssignee(username, username, pageable)
                 .map(TaskEntity::toDomain);
     }
 
@@ -238,141 +158,44 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     }
 
     // ═══════════════════════════════════════════════════════
-    // RECHERCHE DYNAMIQUE AVEC FILTRES (Sprint 2)
+    // RECHERCHE DYNAMIQUE AVEC FILTRES (TaskPersistencePort)
     // ═══════════════════════════════════════════════════════
 
-    /**
-     * ═══════════════════════════════════════════════════════════
-     * RECHERCHE DYNAMIQUE AVEC FILTRES OPTIONNELS
-     * ═══════════════════════════════════════════════════════════
-     *
-     * PRINCIPE : Traduction du Parameter Object vers le Repository
-     * ─────────────────────────────────────────────────────────
-     * Cette méthode reçoit un TaskSearchCriteria (Parameter Object)
-     * et décompose chaque champ pour le passer au @Query JPQL
-     * du TaskRepository.
-     *
-     * FLUX COMPLET :
-     * TaskManager.searchTasks(criteria, ...)
-     *   → TaskPersistencePort.searchTasks(criteria, pageable)  [interface]
-     *     → TaskPersistenceAdapter.searchTasks(criteria, pageable) [CETTE MÉTHODE]
-     *       → TaskRepository.searchTasks(keyword, userId, ..., pageable) [JPA @Query]
-     *         → SELECT ... FROM TaskEntity WHERE deletedAt IS NULL
-     *           AND (:param IS NULL OR condition)
-     *
-     * PRINCIPE ":param IS NULL OR condition" DANS LE @Query :
-     * ────────────────────────────────────────────────────────
-     * Quand un paramètre est null :
-     *   (:param IS NULL)  → TRUE  → le filtre est ignoré (court-circuit)
-     *
-     * Quand un paramètre est non-null :
-     *   (:param IS NULL)  → FALSE → la condition après OR est évaluée
-     *
-     * EXEMPLE CONCRET avec keyword = "urgence" et status = null :
-     *   AND (NULL IS NULL                           → TRUE  → ignoré)
-     *   AND (:status IS NULL OR t.status = :status)  → TRUE  → ignoré)
-     *
-     *   → Résultat SQL : WHERE deletedAt IS NULL
-     *       AND (title LIKE '%urgence%' OR description LIKE '%urgence%')
-     *
-     * @param criteria Les critères de recherche (tous optionnels)
-     * @param pageable La pagination et le tri
-     * @return Une page de Task (objets domaine, pas des entités JPA)
-     */
     @Override
     public Page<Task> searchTasks(TaskSearchCriteria criteria, Pageable pageable) {
         log.debug("ADAPTATEUR JPA : Recherche dynamique avec critères keyword={}, userId={}, assigneeId={}, status={}, priority={}",
                 criteria.keyword(), criteria.userId(), criteria.assigneeId(),
                 criteria.status(), criteria.priority());
 
-        // Déstructure le Parameter Object en paramètres individuels pour JPQL
         Page<TaskEntity> result = taskRepository.searchTasks(
-                criteria.keyword(),
-                criteria.userId(),
-                criteria.assigneeId(),
-                criteria.status(),
-                criteria.priority(),
-                criteria.dueDateFrom(),
-                criteria.dueDateTo(),
-                criteria.createdFrom(),
-                criteria.createdTo(),
-                pageable
+                criteria.keyword(), criteria.userId(), criteria.assigneeId(),
+                criteria.status(), criteria.priority(),
+                criteria.dueDateFrom(), criteria.dueDateTo(),
+                criteria.createdFrom(), criteria.createdTo(), pageable
         );
 
-        // .map(TaskEntity::toDomain) : transforme chaque TaskEntity en Task (record domaine)
-        // Les métadonnées de pagination (totalElements, totalPages) sont préservées
         return result.map(TaskEntity::toDomain);
     }
 
-    /**
-     * CORRECTION BUG 1 — Recherche dynamique pour USER (propriétaire OU assignataire)
-     *
-     * Délègue au Repository qui utilise la @Query JPQL :
-     * WHERE (t.userId = :username OR t.assigneeId = :username)
-     *   AND ... autres filtres optionnels ...
-     *
-     * Cette méthode remplace les DEUX requêtes séparées (owned + assigned)
-     * qui étaient fusionnées manuellement dans le TaskManager, causant
-     * des bugs de pagination.
-     *
-     * AVANTAGE : La pagination est EXACTE car la BDD gère le OR
-     * nativement dans une seule requête.
-     */
     @Override
     public Page<Task> searchTasksForUser(String username, TaskSearchCriteria criteria, Pageable pageable) {
         log.debug("ADAPTATEUR JPA : Recherche dynamique USER {} (owner OR assignee) keyword={}, status={}, priority={}",
                 username, criteria.keyword(), criteria.status(), criteria.priority());
 
         Page<TaskEntity> result = taskRepository.searchTasksForUser(
-                username,
-                criteria.keyword(),
-                criteria.status(),
-                criteria.priority(),
-                criteria.dueDateFrom(),
-                criteria.dueDateTo(),
-                criteria.createdFrom(),
-                criteria.createdTo(),
-                pageable
+                username, criteria.keyword(), criteria.status(), criteria.priority(),
+                criteria.dueDateFrom(), criteria.dueDateTo(),
+                criteria.createdFrom(), criteria.createdTo(), pageable
         );
 
         return result.map(TaskEntity::toDomain);
     }
 
     // ═══════════════════════════════════════════════════════
-    // MÉTHODES DE COMPTAGE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // MÉTHODES DE COMPTAGE NON-RBAC (TaskPersistencePort)
     // ═══════════════════════════════════════════════════════
-
-    /**
-     * ═══════════════════════════════════════════════════════════
-     * COMPTAGE POUR DASHBOARD — Section 6 : Collaboration
-     * ═══════════════════════════════════════════════════════════
-     *
-     * PRINCIPE : L'adaptateur traduit les méthodes de comptage du port
-     * en appels au Repository JPA.
-     *
-     * AVANTAGE vs itération en mémoire :
-     * - countAll() → 1 requête COUNT(*) au lieu de SELECT * + .size()
-     * - countByStatus() → 1 COUNT avec WHERE au lieu de filtre Java
-     * - countByPriority() → 1 GROUP BY au lieu de 4 boucles
-     *
-     * POURQUOI PAS DE CONVERSION ENTITY → DOMAIN ?
-     * → Les méthodes de comptage retournent des primitives (long)
-     *   ou des Map<String, Long>. Il n'y a PAS de mapping Entity ↔ Domain
-     *   à faire. C'est un avantage des COUNT : on ne charge aucune entité.
-     *
-     * PERFORMANCE :
-     * ┌─────────────────────────────────────────────────────────────┐
-     * │  SANS count (itération) :                                   │
-     * │  SELECT * FROM tasks WHERE deleted_at IS NULL               │
-     * │  → Charge N entités complètes en mémoire                     │
-     * │  → Pour 10 000 tâches : ~10 MB en mémoire JVM               │
-     * │                                                              │
-     * │  AVEC count (méthodes dédiées) :                            │
-     * │  SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL         │
-     * │  → Retourne un seul long (8 octets)                          │
-     * │  → Pour 10 000 tâches : 8 octets en mémoire JVM             │
-     * └─────────────────────────────────────────────────────────────┘
-     */
+    // Ces méthodes sont conservées dans TaskPersistencePort car elles
+    // sont utilisées par TaskManager pour des vérifications internes.
 
     @Override
     public long countAll() {
@@ -389,28 +212,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     @Override
     public Map<String, Long> countByPriority() {
         log.debug("ADAPTATEUR JPA : Comptage des tâches par priorité");
-
-        /**
-         * ═══════════════════════════════════════════════════════════
-         * TRANSFORMATION Object[] → Map<String, Long>
-         * ═══════════════════════════════════════════════════════════
-         *
-         * Le @Query GROUP BY retourne une List<Object[]> :
-         * - row[0] = TaskPriority (enum) ex: HIGH
-         * - row[1] = Long (count) ex: 3
-         *
-         * On transforme en Map<String, Long> :
-         * { "HIGH": 3, "MEDIUM": 12, "LOW": 5, "CRITICAL": 1 }
-         *
-         * POURQUOI UN LinkedHashMap ?
-         * → Préserve l'ordre d'insertion (contrairement à HashMap)
-         * → L'ordre des priorités sera celui retourné par la BDD
-         *   (généralement l'ordre de déclaration de l'enum en JPQL)
-         *
-         * NOTE : Si une priorité n'a aucune tâche, elle n'apparaîtra
-         * PAS dans le résultat GROUP BY. Le DashboardService doit
-         * gérer les clés manquantes (afficher 0 par défaut).
-         */
         Map<String, Long> result = new LinkedHashMap<>();
         for (Object[] row : taskRepository.countGroupByPriority()) {
             Task.TaskPriority priority = (Task.TaskPriority) row[0];
@@ -439,46 +240,17 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
     }
 
     // ═══════════════════════════════════════════════════════
-    // MÉTHODES RBAC-AWARE POUR LE DASHBOARD (Sprint 3 — Section 6)
+    // MÉTHODES RBAC-AWARE POUR LE DASHBOARD (TaskDashboardPort)
     // ═══════════════════════════════════════════════════════
+    //
+    // ═══════════════════════════════════════════════════════════════════
+    // PHASE 2 — TÂCHE 3 : Ces méthodes implémentent TaskDashboardPort
+    // ═══════════════════════════════════════════════════════════════════
+    // AVANT : Ces méthodes étaient dans TaskPersistencePort (interface unique).
+    // APRÈS : Ces méthodes sont dans TaskDashboardPort (interface séparée).
+    // L'implémentation physique est IDENTIQUE — seul le contrat change.
+    // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * ═══════════════════════════════════════════════════════════════════
-     * IMPLÉMENTATION RBAC-AWARE — Comptage avec filtre utilisateur
-     * ═══════════════════════════════════════════════════════════════════
-     *
-     * PRINCIPE : Ces méthodes implémentent les 6 nouvelles signatures
-     * du port TaskPersistencePort. Elles délèguent au Repository JPA
-     * qui exécute les @Query avec le pattern ":username IS NULL OR".
-     *
-     * FLUX COMPLET :
-     * DashboardController.getDashboardStats()
-     *   → taskPersistencePort.countActiveTasks(username)       [port — interface]
-     *     → TaskPersistenceAdapter.countActiveTasks(username)   [CETTE CLASSE]
-     *       → taskRepository.countActiveTasks(username)         [Spring Data JPA]
-     *         → @Query SQL avec filtre optionnel                [BDD]
-     *
-     * RÔLE DE L'ADAPTATEUR ICI :
-     * ──────────────────────────
-     * L'adaptateur fait principalement de la "pass-through" (transfert direct)
-     * car les @Query JPA retournent déjà le bon type (long ou List<Object[]>).
-     *
-     * Cependant, pour les méthodes GROUP BY (countByStatus, countByPriority),
-     * l'adaptateur transforme la List<Object[]> en Map<String, Long>.
-     * C'est une LOGIQUE D'ADAPTATION légitime :
-     * - Le Repository retourne des projections brutes (Object[])
-     * - Le Port définit le contrat métier (Map<String, Long>)
-     * - L'adaptateur fait la traduction
-     */
-
-    /**
-     * Compte les tâches actives avec filtre RBAC optionnel.
-     *
-     * Délègue directement au Repository : la @Query gère le filtre.
-     *
-     * @param username null = vue globale (ADMIN/MANAGER), email = filtre USER
-     * @return Nombre de tâches actives (filtrées ou non)
-     */
     @Override
     public long countActiveTasks(String username) {
         log.debug("ADAPTATEUR JPA : Comptage des tâches actives (RBAC username={})",
@@ -486,23 +258,10 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         return taskRepository.countActiveTasks(username);
     }
 
-    /**
-     * Compte les tâches actives par statut avec filtre RBAC optionnel.
-     *
-     * TRANSFORMATION Object[] → Map<String, Long> :
-     * ──────────────────────────────────────────
-     * Le Repository retourne List<Object[]> depuis le GROUP BY.
-     * Chaque Object[] = [TaskStatus enum, Long count].
-     * L'adaptateur transforme en Map<String, Long> pour le contrat du port.
-     *
-     * @param username null = vue globale, email = filtre USER
-     * @return Map { "TODO": N, "DOING": N, "DONE": N }
-     */
     @Override
     public Map<String, Long> countByStatus(String username) {
         log.debug("ADAPTATEUR JPA : Comptage par statut (RBAC username={})",
                 username != null ? username : "GLOBAL");
-
         Map<String, Long> result = new LinkedHashMap<>();
         for (Object[] row : taskRepository.countGroupByStatus(username)) {
             Task.TaskStatus status = (Task.TaskStatus) row[0];
@@ -512,20 +271,10 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         return result;
     }
 
-    /**
-     * Compte les tâches actives par priorité avec filtre RBAC optionnel.
-     *
-     * TRANSFORMATION Object[] → Map<String, Long> :
-     * Même pattern que countByStatus(String) mais pour les priorités.
-     *
-     * @param username null = vue globale, email = filtre USER
-     * @return Map { "LOW": N, "MEDIUM": N, "HIGH": N, "CRITICAL": N }
-     */
     @Override
     public Map<String, Long> countByPriority(String username) {
         log.debug("ADAPTATEUR JPA : Comptage par priorité (RBAC username={})",
                 username != null ? username : "GLOBAL");
-
         Map<String, Long> result = new LinkedHashMap<>();
         for (Object[] row : taskRepository.countGroupByPriorityFiltered(username)) {
             Task.TaskPriority priority = (Task.TaskPriority) row[0];
@@ -535,15 +284,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         return result;
     }
 
-    /**
-     * Compte les tâches actives créées après une date avec filtre RBAC optionnel.
-     *
-     * Délègue directement au Repository : la @Query gère le filtre date + RBAC.
-     *
-     * @param username null = vue globale, email = filtre USER
-     * @param after    Date de référence (créées après cette date)
-     * @return Nombre de tâches créées après la date
-     */
     @Override
     public long countCreatedAfter(String username, LocalDateTime after) {
         log.debug("ADAPTATEUR JPA : Comptage tâches créées après {} (RBAC username={})",
@@ -551,18 +291,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         return taskRepository.countCreatedAfter(username, after);
     }
 
-    /**
-     * Compte les tâches actives complétées après une date avec filtre RBAC optionnel.
-     *
-     * Délègue directement au Repository : la @Query gère le filtre date + RBAC.
-     *
-     * NOTE : completedAt est non-null uniquement pour les tâches DONE.
-     * Cette méthode ne compte donc que les tâches terminées.
-     *
-     * @param username null = vue globale, email = filtre USER
-     * @param after    Date de référence (complétées après cette date)
-     * @return Nombre de tâches complétées après la date
-     */
     @Override
     public long countCompletedAfter(String username, LocalDateTime after) {
         log.debug("ADAPTATEUR JPA : Comptage tâches complétées après {} (RBAC username={})",
@@ -570,15 +298,6 @@ public class TaskPersistenceAdapter implements TaskPersistencePort {
         return taskRepository.countCompletedAfter(username, after);
     }
 
-    /**
-     * Compte les tâches en retard avec filtre RBAC optionnel.
-     *
-     * Délègue directement au Repository : la @Query gère le filtre RBAC
-     * + les conditions "en retard" (dueDate < now ET status ≠ DONE).
-     *
-     * @param username null = vue globale, email = filtre USER
-     * @return Nombre de tâches en retard (filtrées ou non)
-     */
     @Override
     public long countOverdueTasks(String username) {
         log.debug("ADAPTATEUR JPA : Comptage tâches en retard (RBAC username={})",
