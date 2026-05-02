@@ -26,6 +26,7 @@ Thumbs.db
 # Il NE DOIT JAMAIS être commité dans Git.
 .env
 .env.*
+!.env.example
 
 # Certificats SSL (clés privées)
 nginx/ssl/*.key

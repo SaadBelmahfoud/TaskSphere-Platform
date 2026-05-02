@@ -30,73 +30,49 @@ spring:
 # JWT : Clé secrète pour la signature des tokens
 # ═════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════
-# PHASE 1 — CORRECTION P0-1 : Suppression du default JWT_SECRET
+# PHASE 1 — P0-1 : Fail-Fast en PROD uniquement, defaults en DEV
 # ═══════════════════════════════════════════════════════════════════
 #
-# AVANT (CRITIQUE — OWASP A07:2021 Security Misconfiguration) :
-#   secret: ${JWT_SECRET:tasksphere-dev-secret-key-change-me-in-production-256bits}
-#   → Si JWT_SECRET n'est pas défini, l'application démarre avec une clé codée en dur
-#   → Cette clé est VISIBLE dans le code source (repo Git public)
-#   → Un attaquant peut forger des tokens JWT valides !
-#   → C'est une FAILLE DE SÉCURITÉ CRITIQUE
+# PRINCIPE :
+# - application.yaml (DEV/H2) : default autorisé car base temporaire
+# - application-postgres.yml (PROD) : PAS de default → crash si manquant
 #
-# APRÈS (Fail-Fast) :
-#   secret: ${JWT_SECRET}
-#   → Si JWT_SECRET n'est pas défini → l'application CRASH au démarrage
-#   → C'est le comportement SOUHAITÉ : on préfère un crash qu'une sécurité compromise
-#   → Le dev local DOIT configurer JWT_SECRET dans son .env ou IDE
+# POURQUOI UN DEFAULT EN DEV ?
+# → Le développeur clone le repo → ./mvnw spring-boot:run → ça marche
+# → Zéro configuration manuelle nécessaire en local
+# → La clé par défaut est UNIQUEMENT pour H2 en mémoire (pas de vraies données)
 #
-# PRINCIPE FAIL-FAST :
-#   En sécurité, il vaut mieux FAIL que FAIL OPEN.
-#   "Fail open" = laisser passer la requête même si la sécurité est incomplète.
-#   "Fail fast" = bloquer immédiatement si la sécurité est incomplète.
+# ⚠️ CETTE CLÉ NE DOIT JAMAIS ÊTRE UTILISÉE EN PRODUCTION !
+# → application-postgres.yml surcharge avec ${JWT_SECRET} (sans default)
 # ═══════════════════════════════════════════════════════════════════
 jwt:
-  secret: ${JWT_SECRET}
+  secret: ${JWT_SECRET:dev-local-secret-key-for-tasksphere-minimum-256bits-long}
 
 # ═══════════════════════════════════════════════════════════════════
-# PHASE 1 — CORRECTION P0-1 : init.user.password obligatoire
+# PHASE 1 — P0-1 : init.user.password — default en DEV, fail-fast en PROD
 # ═══════════════════════════════════════════════════════════════════
 #
-# AVANT :
-#   @Value("${init.user.password:password123}")
-#   → "password123" comme default = faille de sécurité
+# EN DEV (H2) :
+#   ${INIT_USER_PASSWORD:DevTest123!} → si pas de variable, utilise DevTest123!
+#   → Le développeur n'a rien à configurer
+#   → La base H2 est détruite au redémarrage (pas de risque)
 #
-# APRÈS :
-#   @Value("${init.user.password}")
-#   → PAS de default = l'application CRASH si pas configuré
-#   → Fail-Fast : on préfère un crash à un mot de passe faible
-#
-# EN MODE DEV :
-#   Définir INIT_USER_PASSWORD dans :
-#   - Variable d'environnement de l'IDE (IntelliJ/VSCode)
-#   - Ou fichier .env à la racine du projet
+# EN PROD (PostgreSQL) :
+#   ${INIT_USER_PASSWORD} → PAS de default → crash si manquant
+#   → Obligation de configurer un mot de passe fort
 #
 # SPRING RELAXED BINDING :
 #   init.user.password dans YAML → INIT_USER_PASSWORD en variable d'env
-#   Spring convertit automatiquement : dots → underscores, minuscules → MAJUSCULES
 # ═══════════════════════════════════════════════════════════════════
 init:
   user:
-    password: ${INIT_USER_PASSWORD}
+    password: ${INIT_USER_PASSWORD:DevTest123!}
 
 # ═══════════════════════════════════════════════════════════════════
 # PHASE 1 — P1-5 : Configuration des cookies HttpOnly
 # ═══════════════════════════════════════════════════════════════════
-#
-# app.cookie.secure contrôle le flag Secure des cookies :
-# - false (dev)  : cookies envoyés en HTTP (localhost n'a pas de HTTPS)
-# - true  (prod) : cookies envoyés UNIQUEMENT en HTTPS
-#
-# PRINCIPE :
-# En développement local (http://localhost:8080), le navigateur n'envoie
-# PAS les cookies Secure car la connexion n'est pas HTTPS.
-# Si on met Secure=true en dev → les cookies ne sont jamais envoyés
-# → l'authentification par cookie ne fonctionne PAS.
-#
-# En production (https://tasksphere.example.com), Secure=true est OBLIGATOIRE.
-# Sans Secure, les cookies peuvent être interceptés par un attaquant
-# sur une connexion HTTP non chiffrée (Man-in-the-Middle).
+# En dev : Secure=false (HTTP localhost, les cookies ne passent pas en HTTPS)
+# En prod : Secure=true (HTTPS obligatoire, surchargé dans application-postgres.yml)
 # ═══════════════════════════════════════════════════════════════════
 app:
   cookie:
@@ -120,71 +96,25 @@ springdoc:
 # ═══════════════════════════════════════════════════════════════════
 # SPRING BOOT ACTUATOR — Monitoring de l'application
 # ═══════════════════════════════════════════════════════════════════
-#
-# PRINCIPE : Actuator expose des endpoints de monitoring.
 # En développement, on expose tout pour le diagnostic.
-# En production, on n'expose que health et info.
-#
-# ═══════════════════════════════════════════════════════════════════
-# CORRECTION SPRINT 5 — Suppression des health groups readiness/liveness
-# ═══════════════════════════════════════════════════════════════════
-#
-# PROBLÈME :
-#   Les health groups "readiness" et "liveness" référenciaient
-#   "readinessState" et "livenessState" qui nécessitent la dépendance
-#   spring-boot-starter-availability (NON présente dans le projet).
-#   → Erreur au démarrage : "Included health contributor 'readinessState'
-#     in group 'readiness' does not exist"
-#   → L'application CRASH en boucle (restart_policy: unless-stopped)
-#
-# SOLUTION :
-#   Supprimer les health groups readiness/liveness de application.yaml.
-#   Ces groups sont utiles SEULEMENT si on utilise les
-#   Kubernetes Probes (Liveness/Readiness), ce qui nécessite :
-#     1. La dépendance spring-boot-starter-availability dans pom.xml
-#     2. La propriété management.endpoint.health.probes.enabled=true
-#
-#   Sans Kubernetes, les health groups par défaut (db, diskSpace, ping)
-#   sont suffisants pour Docker healthcheck et monitoring.
-#
-#   Pour ajouter les probes Kubernetes plus tard :
-#     - Ajouter la dépendance dans tasksphere-core/pom.xml :
-#       <dependency>
-#           <groupId>org.springframework.boot</groupId>
-#           <artifactId>spring-boot-starter-availability</artifactId>
-#       </dependency>
-#     - Ajouter dans application.yaml :
-#       management:
-#         endpoint:
-#           health:
-#             probes:
-#               enabled: true
-#             group:
-#               readiness:
-#                 include: readinessState,db
-#               liveness:
-#                 include: livenessState
+# En production (application-postgres.yml), on n'expose que health et info.
 management:
   endpoints:
     web:
       exposure:
-        # En dev : exposer tous les endpoints
         include: health,info,metrics,env,loggers,beans
-      base-path: /actuator  # Chemin de base (défaut)
+      base-path: /actuator
   endpoint:
     health:
-      # Détails complets sur la santé (connexion DB, disk space, etc.)
       show-details: always
     info:
       enabled: true
     metrics:
       enabled: true
-  # Métriques personnalisées
   metrics:
     tags:
       application: ${spring.application.name}
   info:
-    # Construit l'endpoint /actuator/info avec les propriétés info.*
     build:
       enabled: true
     env:
