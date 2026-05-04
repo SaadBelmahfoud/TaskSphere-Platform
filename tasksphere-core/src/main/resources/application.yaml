@@ -126,3 +126,19 @@ info:
     name: TaskSphere Platform
     description: Application de gestion de tâches
     version: 0.0.1-SNAPSHOT
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 3 — FEATURE 6 : Configuration du stockage local
+# ═══════════════════════════════════════════════════════════════════
+# Chemin de base pour le stockage des fichiers uploadés.
+# En production, remplacer par la config MinIO/S3.
+storage:
+  local:
+    path: ${STORAGE_PATH:./uploads}
+
+# Taille maximale des fichiers uploadés (Spring Boot)
+spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB

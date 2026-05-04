@@ -119,6 +119,12 @@ spring:
     # Encodage des scripts SQL
     encoding: UTF-8
 
+  # Taille maximale des fichiers uploadés (Spring Boot)
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
 # JWT : Clé secrète OBLIGATOIREMENT via variable d'environnement en production
 jwt:
   secret: ${JWT_SECRET}    # ← PAS de valeur par défaut en production !
@@ -221,3 +227,12 @@ management:
     health:
       # Montrer les détails seulement aux requêtes authentifiées
       show-details: when-authorized
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 3 — FEATURE 6 : Configuration du stockage local
+# ═══════════════════════════════════════════════════════════════════
+# Chemin de base pour le stockage des fichiers uploadés.
+# En production, remplacer par la config MinIO/S3.
+storage:
+  local:
+    path: ${STORAGE_PATH:./uploads}
