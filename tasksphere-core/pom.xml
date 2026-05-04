@@ -81,6 +81,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- ===== PHASE 3 — FEATURE 1 : WebSocket pour notifications temps réel ===== -->
+        <!-- PRINCIPE : Spring WebSocket fournit le support STOMP/SockJS pour
+             la communication bidirectionnelle en temps réel.
+             - spring-boot-starter-websocket : auto-configuration WebSocket + STOMP
+             - SockJS : fallback pour les environnements sans WebSocket natif
+             - STOMP : protocole de messagerie par dessus WebSocket avec "destinations"
+             (comme des canaux : /topic/notifications, /user/queue/notifications) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-spring-boot3</artifactId>

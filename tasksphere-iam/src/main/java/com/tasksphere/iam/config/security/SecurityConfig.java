@@ -199,6 +199,22 @@ public class SecurityConfig {
                         // ═══════════════════════════════════════════════════════
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         // ═══════════════════════════════════════════════════════
+                        // PHASE 3 — FEATURE 1 : WebSocket endpoint
+                        // ═══════════════════════════════════════════════════════
+                        // Le endpoint /ws est l'URL de connexion WebSocket (SockJS).
+                        // Il doit être accessible SANS JWT car la poignée de main
+                        // (handshake) WebSocket se fait avant que le client puisse
+                        // envoyer des headers d'authentification.
+                        //
+                        // NOTE : L'authentification WebSocket est gérée séparément
+                        // via un intercepteur STOMP qui vérifie le JWT dans les
+                        // headers de la connexion STOMP (CONNECT frame).
+                        //
+                        // /ws/** : le endpoint SockJS génère des sous-chemins
+                        //   /ws/info, /ws/{server}/{session}/websocket, etc.
+                        // ═══════════════════════════════════════════════════════
+                        .requestMatchers("/ws/**").permitAll()
+                        // ═══════════════════════════════════════════════════════
                         // ENDPOINTS SECTION 6 — Couverts par anyRequest().authenticated()
                         // ═══════════════════════════════════════════════════════
                         // Pas besoin de règles spécifiques pour :
