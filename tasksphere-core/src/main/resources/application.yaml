@@ -26,6 +26,12 @@ spring:
       settings:
         web-allow-others: false        # Sécurité : pas d'accès externe
 
+  # Taille maximale des fichiers uploadés (Spring Boot)
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
 # ═════════════════════════════════════════════
 # JWT : Clé secrète pour la signature des tokens
 # ═════════════════════════════════════════════
@@ -135,10 +141,3 @@ info:
 storage:
   local:
     path: ${STORAGE_PATH:./uploads}
-
-# Taille maximale des fichiers uploadés (Spring Boot)
-spring:
-  servlet:
-    multipart:
-      max-file-size: 10MB
-      max-request-size: 10MB

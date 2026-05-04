@@ -144,7 +144,7 @@ public class RateLimiterFilter extends OncePerRequestFilter {
                     clientIp, MAX_REQUESTS, requestPath);
 
             response.setContentType("application/json;charset=UTF-8");
-            response.setStatus(HttpServletResponse.SC_TOO_MANY_REQUESTS);  // 429
+            response.setStatus(429);  // HTTP 429 Too Many Requests
             response.setHeader("Retry-After", String.valueOf(WINDOW_SIZE_MS / 1000));  // en secondes
             response.getWriter().write(
                     "{\"error\":\"Too Many Requests\",\"message\":\"Trop de requêtes. Réessayez dans 60 secondes.\"}"

@@ -18,7 +18,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -73,8 +73,8 @@ class ActivityLogPersistenceAdapterTest {
     @Test
     @DisplayName("findRecent — Retourne les N logs les plus récents")
     void findRecent_returnsLimitedLogs() {
-        // Arrange
-        when(activityLogRepository.findTop10ByOrderByTimestampDesc())
+        // Arrange — utilise findRecent(int, Pageable) au lieu de findTop10ByOrderByTimestampDesc()
+        when(activityLogRepository.findRecent(eq(10), any(Pageable.class)))
                 .thenReturn(List.of(testEntity));
 
         // Act
@@ -91,7 +91,7 @@ class ActivityLogPersistenceAdapterTest {
         // Arrange
         Pageable pageable = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "timestamp"));
         Page<ActivityLogEntity> entityPage = new PageImpl<>(List.of(testEntity));
-        when(activityLogRepository.findAll(any(Pageable.class))).thenReturn(entityPage);
+        when(activityLogRepository.findAllWithFilter(isNull(), any(Pageable.class))).thenReturn(entityPage);
 
         // Act
         Page<ActivityLog> result = adapter.findAll(null, pageable);

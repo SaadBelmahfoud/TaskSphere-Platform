@@ -78,7 +78,10 @@ class TaskPersistenceAdapterTest {
     void save_existingTask_updates() {
         // Arrange
         TaskEntity existingEntity = new TaskEntity(testTask);
-        existingEntity.markNotNew(); // Simuler une entité chargée depuis la DB
+        // NOTE : markNotNew() est private dans TaskEntity.
+        // Dans un test unitaire avec mocks, le flag isNew n'affecte
+        // pas le comportement — l'adaptateur décide INSERT vs UPDATE
+        // uniquement via findByIdAndDeletedAtIsNull(), pas via isNew.
         when(taskRepository.findByIdAndDeletedAtIsNull("task-1")).thenReturn(Optional.of(existingEntity));
 
         Task updatedTask = testTask.update("Updated Title", testTask.description());

@@ -39,6 +39,14 @@ import static org.mockito.Mockito.*;
  * 1. Arrange : préparer les mocks et les données de test
  * 2. Act : appeler la méthode du contrôleur
  * 3. Assert : vérifier le résultat et les interactions avec les mocks
+ *
+ * NOTE TECHNIQUE — doReturn().when() vs when().thenReturn() :
+ * ──────────────────────────────────────────────────────────────
+ * Authentication.getAuthorities() retourne Collection<? extends GrantedAuthority>.
+ * Le wildcard (?) rend when().thenReturn() impossible car Java ne peut pas
+ * convertir Collection<GrantedAuthority> en Collection<? extends GrantedAuthority>
+ * (invariance des generics). doReturn().when() contourne ce problème car
+ * il utilise les types bruts (raw types) en interne.
  */
 @ExtendWith(MockitoExtension.class)
 class AdminControllerTest {
@@ -75,8 +83,8 @@ class AdminControllerTest {
     @DisplayName("getAllUsers — ADMIN peut lister les utilisateurs")
     void getAllUsers_adminRole_returnsUsers() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")))
+                .when(authentication).getAuthorities();
         when(authentication.getName()).thenReturn("admin@tasksphere.com");
         when(userRepository.findAll()).thenReturn(List.of(testUser));
 
@@ -92,8 +100,8 @@ class AdminControllerTest {
     @DisplayName("getAllUsers — MANAGER peut lister les utilisateurs (lecture seule)")
     void getAllUsers_managerRole_returnsUsers() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_MANAGER")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_MANAGER")))
+                .when(authentication).getAuthorities();
         when(authentication.getName()).thenReturn("manager@tasksphere.com");
         when(userRepository.findAll()).thenReturn(List.of(testUser));
 
@@ -108,8 +116,8 @@ class AdminControllerTest {
     @DisplayName("getAllUsers — USER reçoit 403 Forbidden")
     void getAllUsers_userRole_returnsForbidden() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_USER")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_USER")))
+                .when(authentication).getAuthorities();
         when(authentication.getName()).thenReturn("user@tasksphere.com");
 
         // Act
@@ -128,8 +136,8 @@ class AdminControllerTest {
     @DisplayName("updateUserRole — ADMIN peut changer le rôle")
     void updateUserRole_adminRole_updatesRole() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")))
+                .when(authentication).getAuthorities();
         when(authentication.getName()).thenReturn("admin@tasksphere.com");
         when(userRepository.findById("user-123")).thenReturn(Optional.of(testUser));
         when(userRepository.save(any(UserEntity.class))).thenReturn(testUser);
@@ -149,8 +157,8 @@ class AdminControllerTest {
     @DisplayName("updateUserRole — MANAGER reçoit 403 Forbidden")
     void updateUserRole_managerRole_returnsForbidden() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_MANAGER")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_MANAGER")))
+                .when(authentication).getAuthorities();
 
         var request = new com.tasksphere.iam.dto.RoleUpdateRequest("ADMIN");
 
@@ -166,8 +174,8 @@ class AdminControllerTest {
     @DisplayName("updateUserRole — Utilisateur inexistant retourne 404")
     void updateUserRole_nonExistentUser_returnsNotFound() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")))
+                .when(authentication).getAuthorities();
         when(userRepository.findById("nonexistent")).thenReturn(Optional.empty());
 
         var request = new com.tasksphere.iam.dto.RoleUpdateRequest("MANAGER");
@@ -187,8 +195,8 @@ class AdminControllerTest {
     @DisplayName("toggleUserStatus — ADMIN peut désactiver un utilisateur")
     void toggleUserStatus_adminRole_togglesStatus() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")))
+                .when(authentication).getAuthorities();
         when(authentication.getName()).thenReturn("admin@tasksphere.com");
         when(userRepository.findById("user-123")).thenReturn(Optional.of(testUser));
         when(userRepository.save(any(UserEntity.class))).thenReturn(testUser);
@@ -206,8 +214,8 @@ class AdminControllerTest {
     @DisplayName("toggleUserStatus — Utilisateur inexistant retourne 404")
     void toggleUserStatus_nonExistentUser_returnsNotFound() {
         // Arrange
-        when(authentication.getAuthorities())
-                .thenReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        doReturn(List.of(new SimpleGrantedAuthority("ROLE_ADMIN")))
+                .when(authentication).getAuthorities();
         when(userRepository.findById("nonexistent")).thenReturn(Optional.empty());
 
         // Act

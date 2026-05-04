@@ -119,9 +119,12 @@ public class AsyncConfig {
 
         executor.initialize();
 
+        // NOTE : getRejectedExecutionHandler() n'existe pas sur
+        // ThreadPoolTaskExecutor dans Spring Framework 6.x.
+        // On log la policy directement car on vient de la définir.
         log.info("ThreadPoolTaskExecutor configuré : core={}, max={}, queue={}, rejection=CallerRunsPolicy",
                 executor.getCorePoolSize(), executor.getMaxPoolSize(),
-                executor.getQueueCapacity(), executor.getRejectedExecutionHandler().getClass().getSimpleName());
+                executor.getQueueCapacity());
 
         return executor;
     }
