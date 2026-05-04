@@ -1,6 +1,8 @@
 package com.tasksphere.core.controller;
 
+import com.tasksphere.core.dto.BurndownDataResponse;
 import com.tasksphere.core.dto.DashboardStatsResponse;
+import com.tasksphere.core.dto.VelocityDataResponse;
 import com.tasksphere.core.service.DashboardService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -126,6 +128,52 @@ public class DashboardController {
         // DÉLÉGATION TOTALE au service — thin controller pattern
         DashboardStatsResponse response = dashboardService.getDashboardStats(authentication);
 
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * GET /api/v1/dashboard/burndown?weeks=4
+     *
+     * PHASE 3 — FEATURE 4 : Données du Burndown Chart
+     * ──────────────────────────────────────────────────
+     * Retourne les données idéales et réelles pour le burndown chart.
+     * La période par défaut est 4 semaines.
+     */
+    @GetMapping("/burndown")
+    public ResponseEntity<BurndownDataResponse> getBurndownData(
+            Authentication authentication,
+            @RequestParam(defaultValue = "4") int weeks) {
+
+        log.info("CONTROLLER : GET /dashboard/burndown — {} (weeks: {})",
+                authentication.getName(), weeks);
+
+        if (weeks < 1) weeks = 4;
+        if (weeks > 12) weeks = 12;
+
+        BurndownDataResponse response = dashboardService.getBurndownData(authentication, weeks);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * GET /api/v1/dashboard/velocity?weeks=8
+     *
+     * PHASE 3 — FEATURE 4 : Données de vélocité
+     * ──────────────────────────────────────────────────
+     * Retourne le nombre de tâches complétées par semaine
+     * et la vélocité moyenne.
+     */
+    @GetMapping("/velocity")
+    public ResponseEntity<VelocityDataResponse> getVelocityData(
+            Authentication authentication,
+            @RequestParam(defaultValue = "8") int weeks) {
+
+        log.info("CONTROLLER : GET /dashboard/velocity — {} (weeks: {})",
+                authentication.getName(), weeks);
+
+        if (weeks < 1) weeks = 8;
+        if (weeks > 24) weeks = 24;
+
+        VelocityDataResponse response = dashboardService.getVelocityData(authentication, weeks);
         return ResponseEntity.ok(response);
     }
 }

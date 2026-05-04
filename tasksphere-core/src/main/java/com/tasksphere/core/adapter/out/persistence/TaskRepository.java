@@ -595,4 +595,42 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
             "AND t.status <> 'DONE' " +
             "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
     long countOverdueTasks(@Param("username") String username);
+
+    // ═══════════════════════════════════════════════════════
+    // PHASE 3 — FEATURE 4 : Requêtes analytiques pour Dashboard
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Compte les tâches actives créées avant une date.
+     * Utilisé pour le total de départ du burndown chart.
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.createdAt < :before " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countCreatedBefore(@Param("username") String username, @Param("before") LocalDateTime before);
+
+    /**
+     * Compte les tâches restantes (non-terminées) à une date donnée.
+     * "Restantes" = créées avant la date ET (non terminées OU terminées après la date).
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.createdAt < :date " +
+            "AND (t.completedAt IS NULL OR t.completedAt > :date) " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countRemainingTasksAt(@Param("username") String username, @Param("date") LocalDateTime date);
+
+    /**
+     * Compte les tâches complétées dans un intervalle.
+     * Utilisé pour la vélocité hebdomadaire.
+     */
+    @Query("SELECT COUNT(t) FROM TaskEntity t " +
+            "WHERE t.deletedAt IS NULL " +
+            "AND t.completedAt >= :from " +
+            "AND t.completedAt < :to " +
+            "AND (:username IS NULL OR t.userId = :username OR t.assigneeId = :username)")
+    long countCompletedBetween(@Param("username") String username,
+                               @Param("from") LocalDateTime from,
+                               @Param("to") LocalDateTime to);
 }

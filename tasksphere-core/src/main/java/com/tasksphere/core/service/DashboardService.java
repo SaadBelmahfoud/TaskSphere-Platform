@@ -5,6 +5,9 @@ import com.tasksphere.core.dto.ActivityLogResponse;
 import com.tasksphere.core.dto.DashboardStatsResponse;
 import com.tasksphere.core.port.out.ActivityLogPort;
 import com.tasksphere.core.port.out.TaskDashboardPort;
+import com.tasksphere.core.dto.BurndownDataResponse;
+import com.tasksphere.core.dto.VelocityDataResponse;
+import com.tasksphere.core.port.out.DashboardAnalyticsPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
@@ -18,6 +21,8 @@ import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.Map;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -248,5 +253,121 @@ public class DashboardService {
                 .map(a -> a.replace("ROLE_", ""))
                 .findFirst()
                 .orElse("USER");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PHASE 3 — FEATURE 4 : Méthodes analytiques (Burndown + Vélocité)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Injection du port analytique.
+     */
+    private final DashboardAnalyticsPort analyticsPort;
+
+    /**
+     * Génère les données du Burndown Chart.
+     *
+     * PRINCIPE — CALCUL DU BURNDOWN :
+     * ────────────────────────────────
+     * 1. Déterminer la période (ex: 4 dernières semaines)
+     * 2. Compter le total de tâches au début de la période
+     * 3. Pour chaque jour, compter les tâches restantes
+     * 4. La ligne idéale est une droite du total à 0
+     *
+     * LIGNE IDÉALE :
+     * Point de départ = totalTasks (jour 1)
+     * Point d'arrivée = 0 (dernier jour)
+     * Pente = -totalTasks / nombreDeJours
+     * Valeur jour J = totalTasks * (1 - J/nombreDeJours)
+     *
+     * LIGNE RÉELLE :
+     * Pour chaque jour J, on compte les tâches créées avant J
+     * qui ne sont PAS encore terminées à J.
+     */
+    @Transactional(readOnly = true)
+    public BurndownDataResponse getBurndownData(Authentication authentication, int weeks) {
+        String username = authentication.getName();
+        String role = extractRole(authentication);
+        boolean isAdminOrManager = "ADMIN".equals(role) || "MANAGER".equals(role);
+        String filterUsername = isAdminOrManager ? null : username;
+
+        LocalDate now = LocalDate.now();
+        LocalDate startDate = now.minusWeeks(weeks);
+        LocalDateTime startDateTime = startDate.atStartOfDay();
+
+        // Total de tâches au début de la période
+        long totalTasks = analyticsPort.countCreatedBefore(filterUsername, startDateTime.plusDays(1));
+        if (totalTasks == 0) totalTasks = taskDashboardPort.countActiveTasks(filterUsername);
+
+        long totalDays = ChronoUnit.DAYS.between(startDate, now) + 1;
+
+        // Ligne idéale : droite de totalTasks à 0
+        List<BurndownDataResponse.DataPoint> idealLine = new ArrayList<>();
+        List<BurndownDataResponse.DataPoint> actualLine = new ArrayList<>();
+
+        for (long day = 0; day <= totalDays; day++) {
+            LocalDate currentDate = startDate.plusDays(day);
+            String dateStr = currentDate.toString();
+
+            // Ligne idéale
+            double idealValue = totalTasks * (1.0 - (double) day / totalDays);
+            idealLine.add(new BurndownDataResponse.DataPoint(dateStr, Math.round(idealValue)));
+
+            // Ligne réelle (tâches restantes à cette date)
+            // On ne calcule que jusqu'à aujourd'hui (pas de données futures)
+            if (!currentDate.isAfter(now)) {
+                long remaining = analyticsPort.countRemainingTasks(filterUsername, currentDate.plusDays(1).atStartOfDay());
+                actualLine.add(new BurndownDataResponse.DataPoint(dateStr, remaining));
+            }
+        }
+
+        return new BurndownDataResponse(idealLine, actualLine, totalTasks,
+                startDate.toString(), now.toString());
+    }
+
+    /**
+     * Génère les données de vélocité.
+     *
+     * PRINCIPE — CALCUL DE LA VÉLOCITÉ :
+     * ────────────────────────────────────
+     * 1. Déterminer la période (ex: 8 dernières semaines)
+     * 2. Pour chaque semaine, compter les tâches complétées
+     * 3. Calculer la vélocité moyenne
+     *
+     * VÉLOCITÉ HEBDOMADAIRE :
+     * Semaine 1 : 5 tâches complétées
+     * Semaine 2 : 7 tâches complétées
+     * Semaine 3 : 6 tâches complétées
+     * Vélocité moyenne : (5+7+6)/3 = 6 tâches/semaine
+     */
+    @Transactional(readOnly = true)
+    public VelocityDataResponse getVelocityData(Authentication authentication, int weeks) {
+        String username = authentication.getName();
+        String role = extractRole(authentication);
+        boolean isAdminOrManager = "ADMIN".equals(role) || "MANAGER".equals(role);
+        String filterUsername = isAdminOrManager ? null : username;
+
+        LocalDate now = LocalDate.now();
+        List<VelocityDataResponse.WeeklyData> weeklyData = new ArrayList<>();
+        long totalCompleted = 0;
+
+        for (int w = weeks - 1; w >= 0; w--) {
+            LocalDate weekStart = now.minusWeeks(w).with(DayOfWeek.MONDAY);
+            LocalDate weekEnd = weekStart.plusWeeks(1);
+
+            long completed = analyticsPort.countCompletedBetween(
+                    filterUsername,
+                    weekStart.atStartOfDay(),
+                    weekEnd.atStartOfDay()
+            );
+
+            String weekLabel = "S" + (weeks - w);
+            weeklyData.add(new VelocityDataResponse.WeeklyData(weekLabel, completed));
+            totalCompleted += completed;
+        }
+
+        double averageVelocity = weeks > 0 ? (double) totalCompleted / weeks : 0.0;
+
+        return new VelocityDataResponse(weeklyData, averageVelocity, weeks);
     }
 }
