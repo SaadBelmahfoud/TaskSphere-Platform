@@ -2,9 +2,11 @@ package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.domain.TaskChangeLog;
 import com.tasksphere.core.domain.event.TaskAuditEvent;
 import com.tasksphere.core.domain.event.TaskCreatedEvent;
 import com.tasksphere.core.port.out.EventPublisherPort;
+import com.tasksphere.core.port.out.TaskChangeLogPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -25,47 +29,39 @@ import java.util.Optional;
  * ═══════════════════════════════════════════════════════════════════
  *
  * ROLE : Cœur de la logique métier. Ce service implémente les
- * règles de gestion des tâches, y compris le RBAC et l'audit trail.
+ * règles de gestion des tâches, y compris le RBAC, l'audit trail
+ * et l'historique détaillé des changements.
  *
  * ═══════════════════════════════════════════════════════════════════
- * PHASE 2 — TÂCHE 4 : Audit via événement post-commit
+ * PHASE 3 — FEATURE 2 : Enregistrement des changements champ par champ
  * ═══════════════════════════════════════════════════════════════════
  *
- * CHANGEMENT MAJEUR : L'audit n'est PLUS appelé directement.
+ * NOUVEAU CONCEPT — CHANGE LOGGING :
+ * ────────────────────────────────────
+ * Avant cette Phase 3, l'audit enregistrait uniquement l'ACTION globale
+ * ("Tâche modifiée"). Maintenant, on enregistre AUSSI chaque champ
+ * modifié avec son ancienne et nouvelle valeur.
  *
- * AVANT : ActivityLogService injecté + appel direct dans chaque méthode
- *   private final ActivityLogService activityLogService;
- *   ...
- *   activityLogService.log(TASK_CREATED, details, username, taskId, taskTitle);
- *   → Problème : l'audit est dans la MÊME transaction que l'opération.
- *   → Si l'audit échoue et lève une RuntimeException, la transaction
- *     est rollback → l'opération métier échoue aussi !
- *   → Le try-catch dans logActivity() masquait ce problème mais
- *     ne le résolvait pas (perte silencieuse de logs).
+ * EXEMPLE :
+ * L'utilisateur modifie une tâche (titre + priorité) →
+ *   ActivityLog   : "Tâche modifiée — titre changé, priorité → HIGH"
+ *   TaskChangeLog : 2 entrées :
+ *     1. field_name=title, old="Ancien titre", new="Nouveau titre"
+ *     2. field_name=priority, old="MEDIUM", new="HIGH"
  *
- * APRÈS : Publication d'un événement TaskAuditEvent
- *   eventPublisher.publishAuditEvent(new TaskAuditEvent(...));
- *   → L'audit est exécuté APRÈS le commit par TaskAuditEventListener.
- *   → Si l'audit échoue, l'opération métier est DÉJÀ commitée.
- *   → Pas de try-catch nécessaire dans le service.
- *   → Fiabilité : l'opération métier ne peut JAMAIS être impactée par l'audit.
+ * POURQUOI ENREGISTRER DANS LA MÊME TRANSACTION ?
+ * ────────────────────────────────────────────────
+ * Contrairement à ActivityLog (post-commit via événement),
+ * les TaskChangeLogs sont enregistrés DANS la transaction métier.
+ * Pourquoi ? Parce que :
+ * 1. Les changements font partie INTÉGRANTE de l'opération
+ * 2. Si la transaction rollback, les changements doivent aussi disparaître
+ * 3. Pas de risque de "changement fantôme" sans opération
  *
- * ActivityLogService n'est PLUS injecté dans TaskManager !
- * (il l'était avant via le champ `activityLogService`).
- *
- * ═══════════════════════════════════════════════════════════════════
- * SECTION 6 — AUDIT TRAIL (Activity Log) — ANCIENNE VERSION
- * ═══════════════════════════════════════════════════════════════════
- *
- * PRINCIPE : Audit comme Side Effect
- * ─────────────────────────────────
- * L'audit n'est PAS la responsabilité principale du TaskManager.
- * C'est un effet secondaire (side effect) de chaque opération d'écriture.
- *
- * PHASE 2 — TÂCHE 4 : L'audit est désormais un événement asynchrone.
- * Le TaskManager publie un événement et ne se soucie PLUS de savoir
- * si l'audit réussit ou échoue. C'est le TaskAuditEventListener
- * qui gère l'enregistrement réel, dans une transaction indépendante.
+ * PATTERN UTILISÉ : "Collecting Parameter"
+ * ────────────────────────────────────────────
+ * On accumule les changements dans une List<TaskChangeLog>
+ * pendant la comparaison, puis on les sauvegarde en batch.
  */
 @Slf4j
 @Service
@@ -78,20 +74,13 @@ public class TaskManager {
 
     /**
      * ═══════════════════════════════════════════════════════════════════
-     * PHASE 2 — TÂCHE 4 : ActivityLogService retiré de l'injection
+     * PHASE 3 — FEATURE 2 : Injection du TaskChangeLogPort
      * ═══════════════════════════════════════════════════════════════════
-     *
-     * AVANT : ActivityLogService était injecté directement
-     *   private final ActivityLogService activityLogService;
-     *   → Appelé dans chaque méthode d'écriture (createTask, updateTask, etc.)
-     *   → Même transaction → risque de rollback si l'audit échoue
-     *
-     * APRÈS : ActivityLogService n'est PLUS injecté
-     *   → L'audit est publié via eventPublisher.publishAuditEvent()
-     *   → Le TaskAuditEventListener gère l'enregistrement post-commit
-     *   → Transaction indépendante → fiabilité garantie
+     * Permet d'enregistrer les changements champ par champ
+     * dans la même transaction que l'opération métier.
      * ═══════════════════════════════════════════════════════════════════
      */
+    private final TaskChangeLogPort changeLogPort;
 
     // ═══════════════════════════════════════════════════════
     // CRÉATION DE TÂCHE
@@ -142,15 +131,29 @@ public class TaskManager {
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
         // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 2 : Enregistrement des valeurs initiales
+        // ═══════════════════════════════════════════════════════════════════
+        // À la création, on enregistre les valeurs initiales comme changements
+        // (oldValue = null, newValue = valeur initiale).
+        // Cela permet de voir dans l'historique QUELLES étaient les valeurs
+        // de départ de la tâche.
+        // ═══════════════════════════════════════════════════════════════════
+        List<TaskChangeLog> changes = new ArrayList<>();
+        changes.add(TaskChangeLog.create(savedTask.id(), "title", null, savedTask.title(), currentUsername));
+        if (savedTask.description() != null && !savedTask.description().isBlank()) {
+            changes.add(TaskChangeLog.create(savedTask.id(), "description", null, savedTask.description(), currentUsername));
+        }
+        changes.add(TaskChangeLog.create(savedTask.id(), "status", null, savedTask.status().name(), currentUsername));
+        changes.add(TaskChangeLog.create(savedTask.id(), "priority", null, savedTask.priority().name(), currentUsername));
+        if (savedTask.dueDate() != null) {
+            changes.add(TaskChangeLog.create(savedTask.id(), "dueDate", null, savedTask.dueDate().toString(), currentUsername));
+        }
+        if (savedTask.assigneeId() != null) {
+            changes.add(TaskChangeLog.create(savedTask.id(), "assigneeId", null, savedTask.assigneeId(), currentUsername));
+        }
+        changeLogPort.saveAll(changes);
+
         // PHASE 2 — TÂCHE 4 : Audit via événement (post-commit)
-        // ═══════════════════════════════════════════════════════════════════
-        // AVANT : logActivity(TASK_CREATED, currentUsername, details, savedTask.id(), savedTask.title());
-        //   → Appel direct à ActivityLogService → même transaction → risque de rollback
-        //
-        // APRÈS : eventPublisher.publishAuditEvent(new TaskAuditEvent(...))
-        //   → Publication d'un événement → TaskAuditEventListener l'enregistre
-        //     APRÈS le commit de la transaction → fiabilité garantie
-        // ═══════════════════════════════════════════════════════════════════
         StringBuilder details = new StringBuilder("Tâche créée");
         if (savedTask.priority() != Task.TaskPriority.MEDIUM) {
             details.append(" avec priorité ").append(savedTask.priority().name());
@@ -210,9 +213,24 @@ public class TaskManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // MISE À JOUR AVEC RBAC
+    // MISE À JOUR AVEC RBAC + CHANGE LOGGING
     // ═══════════════════════════════════════════════════════
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 2 : Mise à jour avec enregistrement des changements
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PRINCIPE — COMPARAISON CHAMP PAR CHAMP :
+     * Avant d'appliquer chaque modification, on compare l'ancienne
+     * et la nouvelle valeur. Si elles sont différentes, on enregistre
+     * le changement dans TaskChangeLog.
+     *
+     * PATTERN "COLLECTING PARAMETER" :
+     * On accumule les changements dans une List<TaskChangeLog>,
+     * puis on les sauvegarde en batch à la fin (une seule opération DB).
+     * ═══════════════════════════════════════════════════════════════════
+     */
     @Transactional
     public Optional<Task> updateTask(String taskId, String currentUsername, String currentRole,
                                      String title, String description, String priority, LocalDate dueDate) {
@@ -228,25 +246,52 @@ public class TaskManager {
 
         Task updatedTask = existingTask;
         StringBuilder details = new StringBuilder("Tâche modifiée");
-        if (title != null && !title.isBlank()) {
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 2 : Collecte des changements
+        // ═══════════════════════════════════════════════════════════════════
+        List<TaskChangeLog> changes = new ArrayList<>();
+
+        if (title != null && !title.isBlank() && !title.equals(existingTask.title())) {
+            changes.add(TaskChangeLog.create(taskId, "title",
+                    existingTask.title(), title, currentUsername));
             updatedTask = updatedTask.update(title, updatedTask.description());
             details.append(" — titre changé");
         }
-        if (description != null) {
+        if (description != null && !description.equals(existingTask.description())) {
+            changes.add(TaskChangeLog.create(taskId, "description",
+                    existingTask.description(), description, currentUsername));
             updatedTask = updatedTask.update(updatedTask.title(), description);
             details.append(" — description modifiée");
         }
         if (priority != null) {
             Task.TaskPriority newPriority = Task.TaskPriority.valueOf(priority);
-            updatedTask = updatedTask.updatePriority(newPriority);
-            details.append(" — priorité → ").append(newPriority.name());
+            if (newPriority != existingTask.priority()) {
+                changes.add(TaskChangeLog.create(taskId, "priority",
+                        existingTask.priority().name(), newPriority.name(), currentUsername));
+                updatedTask = updatedTask.updatePriority(newPriority);
+                details.append(" — priorité → ").append(newPriority.name());
+            }
         }
         if (dueDate != null) {
-            updatedTask = updatedTask.updateDueDate(dueDate);
-            details.append(" — date d'échéance → ").append(dueDate);
+            String oldDueDate = existingTask.dueDate() != null ? existingTask.dueDate().toString() : null;
+            String newDueDate = dueDate.toString();
+            if (!dueDate.equals(existingTask.dueDate())) {
+                changes.add(TaskChangeLog.create(taskId, "dueDate",
+                        oldDueDate, newDueDate, currentUsername));
+                updatedTask = updatedTask.updateDueDate(dueDate);
+                details.append(" — date d'échéance → ").append(dueDate);
+            }
         }
 
         Task savedTask = persistencePort.save(updatedTask);
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 2 : Sauvegarde en batch des changements
+        // ═══════════════════════════════════════════════════════════════════
+        if (!changes.isEmpty()) {
+            changeLogPort.saveAll(changes);
+        }
 
         // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
         eventPublisher.publishAuditEvent(new TaskAuditEvent(
@@ -261,7 +306,7 @@ public class TaskManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // CHANGEMENT DE STATUT AVEC RBAC
+    // CHANGEMENT DE STATUT AVEC RBAC + CHANGE LOGGING
     // ═══════════════════════════════════════════════════════
 
     @Transactional
@@ -281,6 +326,15 @@ public class TaskManager {
         Task.TaskStatus status = Task.TaskStatus.valueOf(newStatus);
         Task savedTask = persistencePort.save(existingTask.updateStatus(status));
 
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 2 : Enregistrement du changement de statut
+        // ═══════════════════════════════════════════════════════════════════
+        if (oldStatus != status) {
+            TaskChangeLog change = TaskChangeLog.create(taskId, "status",
+                    oldStatus.name(), status.name(), currentUsername);
+            changeLogPort.save(change);
+        }
+
         // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
         String details = String.format("Statut changé : %s → %s", oldStatus.name(), status.name());
         eventPublisher.publishAuditEvent(new TaskAuditEvent(
@@ -295,7 +349,7 @@ public class TaskManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // ASSIGNATION DE TÂCHE (MANAGER/ADMIN uniquement)
+    // ASSIGNATION DE TÂCHE (MANAGER/ADMIN uniquement) + CHANGE LOGGING
     // ═══════════════════════════════════════════════════════
 
     @Transactional
@@ -312,6 +366,17 @@ public class TaskManager {
                 ? userInformationPort.resolveAssigneeToEmail(assigneeId) : null;
 
         Task savedTask = persistencePort.save(existingTask.assignTo(effectiveAssigneeId));
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 2 : Enregistrement du changement d'assignation
+        // ═══════════════════════════════════════════════════════════════════
+        String oldAssignee = existingTask.assigneeId();
+        if ((oldAssignee == null && effectiveAssigneeId != null)
+                || (oldAssignee != null && !oldAssignee.equals(effectiveAssigneeId))) {
+            TaskChangeLog change = TaskChangeLog.create(taskId, "assigneeId",
+                    oldAssignee, effectiveAssigneeId, currentUsername);
+            changeLogPort.save(change);
+        }
 
         // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
         if (effectiveAssigneeId != null) {
@@ -366,27 +431,4 @@ public class TaskManager {
         ));
         return true;
     }
-
-    /**
-     * ═══════════════════════════════════════════════════════════════════
-     * PHASE 2 — TÂCHE 4 : Méthode logActivity() RETIRÉE
-     * ═══════════════════════════════════════════════════════════════════
-     *
-     * AVANT : Cette méthode privée encapsulait le try-catch autour
-     * de activityLogService.log(). Elle masquait les erreurs d'audit.
-     *
-     * private void logActivity(ActivityLog.Action action, String actorEmail,
-     *                          String details, String taskId, String taskTitle) {
-     *     try {
-     *         activityLogService.log(action, details, actorEmail, taskId, taskTitle);
-     *     } catch (Exception e) {
-     *         log.warn("AUDIT TRAIL : Échec de l'enregistrement — ...");
-     *     }
-     * }
-     *
-     * APRÈS : Cette méthode est SUPPRIMÉE. L'audit est publié via
-     * eventPublisher.publishAuditEvent(new TaskAuditEvent(...)).
-     * Le try-catch est maintenant dans TaskAuditEventListener.
-     * ═══════════════════════════════════════════════════════════════════
-     */
 }
