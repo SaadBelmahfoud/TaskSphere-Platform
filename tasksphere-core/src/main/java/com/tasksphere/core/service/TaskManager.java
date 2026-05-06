@@ -1,11 +1,13 @@
 package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.ActivityLog;
+import com.tasksphere.core.domain.Tag;
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.domain.TaskChangeLog;
 import com.tasksphere.core.domain.event.TaskAuditEvent;
 import com.tasksphere.core.domain.event.TaskCreatedEvent;
 import com.tasksphere.core.port.out.EventPublisherPort;
+import com.tasksphere.core.port.out.TagPort;
 import com.tasksphere.core.port.out.TaskChangeLogPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
@@ -62,6 +64,24 @@ import java.util.Optional;
  * ────────────────────────────────────────────
  * On accumule les changements dans une List<TaskChangeLog>
  * pendant la comparaison, puis on les sauvegarde en batch.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — FEATURE 3 : Gestion des tags lors de la création/modification
+ * ═══════════════════════════════════════════════════════════════════
+ * Le TaskManager gère maintenant l'association des tags aux tâches
+ * lors de la création et de la modification. Il délègue la persistance
+ * des associations (table task_tags) au TagPort.
+ *
+ * PRINCIPE — SYNCHRONISATION DES TAGS (modification) :
+ * ─────────────────────────────────────────────────────
+ * Lors d'une modification, si tagIds est fourni (non null), on
+ * synchronise les tags : on ajoute les nouveaux et on retire les
+ * anciens. Ce n'est PAS un ajout incrémental, c'est un REMPLACEMENT
+ * complet de la liste. Cela correspond au comportement REST standard.
+ *
+ * Si tagIds est null → les tags ne sont PAS modifiés (PATCH sémantique).
+ * Si tagIds est une liste vide → tous les tags sont retirés.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @Service
@@ -82,18 +102,38 @@ public class TaskManager {
      */
     private final TaskChangeLogPort changeLogPort;
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Injection du TagPort
+     * ═══════════════════════════════════════════════════════════════════
+     * Permet de gérer les associations tag ↔ tâche (table task_tags)
+     * lors de la création et de la modification des tâches.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final TagPort tagPort;
+
     // ═══════════════════════════════════════════════════════
     // CRÉATION DE TÂCHE
     // ═══════════════════════════════════════════════════════
 
     @Transactional
     public Task createTask(String title, String description, String currentUsername) {
-        return createTask(title, description, currentUsername, null, null, null);
+        return createTask(title, description, currentUsername, null, null, null, null);
     }
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Création avec support des tags
+     * ═══════════════════════════════════════════════════════════════════
+     * Surcharge qui accepte une liste de tagIds à associer à la tâche
+     * dès sa création. Le comportement existant (sans tags) est
+     * préservé via la surcharge à 3 paramètres ci-dessus.
+     * ═══════════════════════════════════════════════════════════════════
+     */
     @Transactional
     public Task createTask(String title, String description, String currentUsername,
-                           String priority, LocalDate dueDate, String assigneeId) {
+                           String priority, LocalDate dueDate, String assigneeId,
+                           List<String> tagIds) {
         log.info("SERVICE : Création de la tâche '{}' par {}", title, currentUsername);
 
         Task taskToSave = Task.create(title, description != null ? description : "", currentUsername);
@@ -129,6 +169,29 @@ public class TaskManager {
 
         Task savedTask = persistencePort.save(taskToSave);
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 3 : Association des tags à la création
+        // ═══════════════════════════════════════════════════════════════════
+        // Si des tagIds sont fournis, on les associe un par un à la tâche.
+        // Chaque association crée une ligne dans la table task_tags.
+        // On vérifie d'abord que le tag existe avant de l'associer.
+        // ═══════════════════════════════════════════════════════════════════
+        if (tagIds != null && !tagIds.isEmpty()) {
+            for (String tagId : tagIds) {
+                if (tagId != null && !tagId.isBlank()) {
+                    try {
+                        tagPort.addTagToTask(savedTask.id(), tagId);
+                        log.debug("SERVICE : Tag {} associé à la tâche {}", tagId, savedTask.id());
+                    } catch (Exception e) {
+                        // Si le tag n'existe pas ou s'il est déjà associé, on logue
+                        // mais on ne fait PAS échouer la création de la tâche
+                        log.warn("SERVICE : Impossible d'associer le tag {} à la tâche {} — {}",
+                                tagId, savedTask.id(), e.getMessage());
+                    }
+                }
+            }
+        }
 
         // ═══════════════════════════════════════════════════════════════════
         // PHASE 3 — FEATURE 2 : Enregistrement des valeurs initiales
@@ -213,12 +276,12 @@ public class TaskManager {
     }
 
     // ═══════════════════════════════════════════════════════
-    // MISE À JOUR AVEC RBAC + CHANGE LOGGING
+    // MISE À JOUR AVEC RBAC + CHANGE LOGGING + TAGS
     // ═══════════════════════════════════════════════════════
 
     /**
      * ═══════════════════════════════════════════════════════════════════
-     * PHASE 3 — FEATURE 2 : Mise à jour avec enregistrement des changements
+     * PHASE 3 — FEATURE 3 : Mise à jour avec synchronisation des tags
      * ═══════════════════════════════════════════════════════════════════
      *
      * PRINCIPE — COMPARAISON CHAMP PAR CHAMP :
@@ -229,11 +292,19 @@ public class TaskManager {
      * PATTERN "COLLECTING PARAMETER" :
      * On accumule les changements dans une List<TaskChangeLog>,
      * puis on les sauvegarde en batch à la fin (une seule opération DB).
+     *
+     * SYNCHRONISATION DES TAGS :
+     * Si tagIds est fourni (non null), on synchronise :
+     * 1. On récupère les tags actuels de la tâche
+     * 2. On calcule les tags à ajouter (nouveaux - actuels)
+     * 3. On calcule les tags à retirer (actuels - nouveaux)
+     * 4. On applique les ajouts et retraits
      * ═══════════════════════════════════════════════════════════════════
      */
     @Transactional
     public Optional<Task> updateTask(String taskId, String currentUsername, String currentRole,
-                                     String title, String description, String priority, LocalDate dueDate) {
+                                     String title, String description, String priority, LocalDate dueDate,
+                                     List<String> tagIds) {
         Task existingTask;
         if ("ADMIN".equals(currentRole)) {
             existingTask = persistencePort.findById(taskId).orElse(null);
@@ -285,6 +356,57 @@ public class TaskManager {
         }
 
         Task savedTask = persistencePort.save(updatedTask);
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 3 : Synchronisation des tags
+        // ═══════════════════════════════════════════════════════════════════
+        // Si tagIds est fourni (non null), on synchronise les associations.
+        // PRINCIPE : on compare les tags actuels avec les tags demandés,
+        // puis on ajoute les nouveaux et on retire les anciens.
+        // ═══════════════════════════════════════════════════════════════════
+        if (tagIds != null) {
+            // Récupérer les tags actuels de la tâche
+            List<Tag> currentTags = tagPort.findTagsByTaskId(taskId);
+            List<String> currentTagIds = currentTags.stream()
+                    .map(Tag::id)
+                    .toList();
+
+            // Tags à ajouter : dans tagIds mais pas dans currentTagIds
+            List<String> tagsToAdd = tagIds.stream()
+                    .filter(id -> !currentTagIds.contains(id))
+                    .toList();
+
+            // Tags à retirer : dans currentTagIds mais pas dans tagIds
+            List<String> tagsToRemove = currentTagIds.stream()
+                    .filter(id -> !tagIds.contains(id))
+                    .toList();
+
+            // Appliquer les ajouts
+            for (String tagIdToAdd : tagsToAdd) {
+                try {
+                    tagPort.addTagToTask(taskId, tagIdToAdd);
+                    log.debug("SERVICE : Tag {} ajouté à la tâche {}", tagIdToAdd, taskId);
+                } catch (Exception e) {
+                    log.warn("SERVICE : Impossible d'ajouter le tag {} à la tâche {} — {}",
+                            tagIdToAdd, taskId, e.getMessage());
+                }
+            }
+
+            // Appliquer les retraits
+            for (String tagIdToRemove : tagsToRemove) {
+                try {
+                    tagPort.removeTagFromTask(taskId, tagIdToRemove);
+                    log.debug("SERVICE : Tag {} retiré de la tâche {}", tagIdToRemove, taskId);
+                } catch (Exception e) {
+                    log.warn("SERVICE : Impossible de retirer le tag {} de la tâche {} — {}",
+                            tagIdToRemove, taskId, e.getMessage());
+                }
+            }
+
+            if (!tagsToAdd.isEmpty() || !tagsToRemove.isEmpty()) {
+                details.append(" — tags modifiés");
+            }
+        }
 
         // ═══════════════════════════════════════════════════════════════════
         // PHASE 3 — FEATURE 2 : Sauvegarde en batch des changements

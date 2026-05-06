@@ -62,6 +62,20 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * → L'audit n'est enregistré QUE si l'opération métier a réussi.
  * → Si l'opération échoue (rollback), l'audit n'est PAS enregistré.
  * → C'est le comportement souhaité : on ne log que les actions EFFECTIVES.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION — Logging d'erreur amélioré
+ * ═══════════════════════════════════════════════════════════════════
+ * PROBLÈME PRÉCÉDENT :
+ * Si l'audit échouait (exception), le catch ne loguait qu'un WARN
+ * avec le message court (e.getMessage()). Cela masquait la stack trace
+ * et rendait le diagnostic impossible en production.
+ *
+ * APRÈS :
+ * On logue l'exception COMPLÈTE (stack trace incluse) au niveau ERROR
+ * pour permettre un diagnostic rapide en production. L'audit reste
+ * un "best effort" — l'exception n'est JAMAIS propagée.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @Component
@@ -86,6 +100,9 @@ public class TaskAuditEventListener {
      *
      * PHASE 3 — FEATURE 1 : Enrichi avec l'envoi de notifications temps réel.
      * En plus de l'audit log, on envoie une notification WebSocket à l'acteur.
+     *
+     * CORRECTION — Logging d'erreur amélioré :
+     * On logue l'exception COMPLÈTE (niveau ERROR) pour le diagnostic.
      */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onAuditEvent(TaskAuditEvent event) {
@@ -130,11 +147,13 @@ public class TaskAuditEventListener {
             notificationService.notifyUser(event.username(), notification);
 
         } catch (Exception e) {
-            // L'audit est un "best effort" : on loggue l'erreur mais on ne
-            // propage PAS l'exception car l'opération métier est déjà commitée.
-            log.warn("AUDIT LISTENER : Échec de l'enregistrement post-commit — " +
-                            "action={}, actor={} — Cause : {}",
-                    event.action(), event.username(), e.getMessage());
+            // CORRECTION — Logging d'erreur amélioré :
+            // L'audit est un "best effort" : on loggue l'erreur COMPLÈTE
+            // (stack trace incluse) mais on ne propage PAS l'exception
+            // car l'opération métier est déjà commitée.
+            log.error("AUDIT LISTENER : ÉCHEC de l'enregistrement post-commit — " +
+                            "action={}, actor={} — L'audit n'a PAS été enregistré !",
+                    event.action(), event.username(), e);
         }
     }
 

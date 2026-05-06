@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /*
  * ====================================================================
@@ -31,6 +32,17 @@ import java.time.LocalDate;
  * Quand le client n'envoie pas assigneeId dans le JSON, Jackson met null.
  * On n'a pas besoin de @JsonInclude ou de valeur par défaut — null est la bonne
  * valeur pour signifier "pas d'assignation".
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — FEATURE 3 : Ajout du champ tagIds
+ * ═══════════════════════════════════════════════════════════════════
+ * Le champ tagIds permet d'associer des tags à la tâche dès sa création.
+ * - Si null ou absent du JSON → pas de tags associés
+ * - Si renseigné → chaque tagId sera associé à la tâche via la table task_tags
+ *
+ * NOTE : La validation de l'existence des tags est faite dans le service
+ * (TagService / TagPort). Le DTO ne fait que transporter les IDs.
+ * ═══════════════════════════════════════════════════════════════════
  */
 public record TaskCreateRequest(
 
@@ -58,6 +70,17 @@ public record TaskCreateRequest(
          * Un MANAGER ou ADMIN peut créer une tâche déjà assignée.
          * Si null ou absent du JSON → tâche non assignée.
          */
-        String assigneeId
+        String assigneeId,
+
+        /**
+         * ═══════════════════════════════════════════════════════════════════
+         * PHASE 3 — FEATURE 3 : IDs des tags à associer à la tâche
+         * ═══════════════════════════════════════════════════════════════════
+         * Liste optionnelle d'IDs de tags à associer à la création.
+         * Si null ou vide → pas de tags associés.
+         * Le service (TaskManager) appellera TagPort.addTagToTask() pour chaque ID.
+         * ═══════════════════════════════════════════════════════════════════
+         */
+        List<String> tagIds
 ) {
 }

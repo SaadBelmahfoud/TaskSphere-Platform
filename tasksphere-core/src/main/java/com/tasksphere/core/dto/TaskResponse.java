@@ -4,6 +4,7 @@ import com.tasksphere.core.domain.Task;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /*
  * ====================================================================
@@ -52,6 +53,20 @@ import java.time.LocalDateTime;
  * - Le DTO (couche de présentation) connaît le domaine
  * - Le domaine ne connaît PAS les DTOs
  * → Le flux de dépendance va du haut vers le bas, pas l'inverse.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — FEATURE 3 : Ajout du champ tags dans la réponse
+ * ═══════════════════════════════════════════════════════════════════
+ * Le champ tags contient la liste des TagResponse associés à la tâche.
+ * Cela permet au frontend d'afficher les tags directement sans
+ * requête supplémentaire (denormalization pour la performance).
+ *
+ * PRINCIPE DE DENORMALIZATION :
+ * On pourrait ne renvoyer que les tagIds et laisser le frontend faire
+ * des requêtes séparées pour les détails des tags. Mais cela
+ * nécessiterait N+1 requêtes (1 pour la tâche + 1 par tag).
+ * En incluant les tags directement, on réduit à 1 seule requête.
+ * ═══════════════════════════════════════════════════════════════════
  */
 public record TaskResponse(
         String id,
@@ -63,11 +78,24 @@ public record TaskResponse(
         LocalDateTime completedAt,
         LocalDateTime createdAt,   // ← CORRECTION B3 : N'est plus null
         String userId,        // Créateur de la tâche
-        String assigneeId     // Personne assignée (null si non assignée)
+        String assigneeId,    // Personne assignée (null si non assignée)
+
+        /**
+         * ═══════════════════════════════════════════════════════════════════
+         * PHASE 3 — FEATURE 3 : Tags associés à la tâche
+         * ═══════════════════════════════════════════════════════════════════
+         * Liste des tags associés à la tâche (denormalized).
+         * Null si les tags n'ont pas été chargés (par exemple dans une liste
+         * paginée où on ne charge pas les tags pour la performance).
+         * Non-null si les tags ont été chargés (par exemple dans le détail
+         * d'une tâche via GET /tasks/{id}).
+         * ═══════════════════════════════════════════════════════════════════
+         */
+        List<TagResponse> tags
 ) {
 
     /**
-     * Convertit un objet domaine Task en DTO de sortie.
+     * Convertit un objet domaine Task en DTO de sortie (sans tags).
      *
      * CORRECTION B3 : Utilise task.createdAt() au lieu de null.
      */
@@ -82,7 +110,33 @@ public record TaskResponse(
                 task.completedAt(),
                 task.createdAt(),    // ← CORRECTION B3 : était null, maintenant réel
                 task.userId(),
-                task.assigneeId()
+                task.assigneeId(),
+                null    // ← Tags non chargés par défaut (performance)
+        );
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Conversion avec tags
+     * ═══════════════════════════════════════════════════════════════════
+     * Surcharge qui inclut les tags associés à la tâche.
+     * Utilisée quand le frontend a besoin d'afficher les tags
+     * (par exemple dans le détail d'une tâche ou dans le Kanban).
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    public static TaskResponse fromDomainWithTags(Task task, List<TagResponse> tags) {
+        return new TaskResponse(
+                task.id(),
+                task.title(),
+                task.description(),
+                task.status() != null ? task.status().name() : "TODO",
+                task.priority() != null ? task.priority().name() : "MEDIUM",
+                task.dueDate(),
+                task.completedAt(),
+                task.createdAt(),
+                task.userId(),
+                task.assigneeId(),
+                tags
         );
     }
 
@@ -102,7 +156,8 @@ public record TaskResponse(
                 task.completedAt(),
                 task.createdAt() != null ? task.createdAt() : createdAt,  // ← CORRECTION B3
                 task.userId(),
-                task.assigneeId()
+                task.assigneeId(),
+                null    // ← Tags non chargés par défaut
         );
     }
 }

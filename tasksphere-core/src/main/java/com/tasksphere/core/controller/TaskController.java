@@ -1,11 +1,14 @@
 package com.tasksphere.core.controller;
 
+import com.tasksphere.core.domain.Tag;
 import com.tasksphere.core.domain.Task;
 import com.tasksphere.core.dto.AssignTaskRequest;
+import com.tasksphere.core.dto.TagResponse;
 import com.tasksphere.core.dto.TaskCreateRequest;
 import com.tasksphere.core.dto.TaskStatusRequest;
 import com.tasksphere.core.dto.TaskUpdateRequest;
 import com.tasksphere.core.dto.TaskResponse;
+import com.tasksphere.core.port.out.TagPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.service.TaskManager;
 import jakarta.validation.Valid;
@@ -21,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -52,6 +56,19 @@ import java.util.Optional;
  *   → Un seul endroit à maintenir (DRY)
  *   → Cohérence garantie entre tous les endpoints
  *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — FEATURE 3 : Support des tags dans les endpoints
+ * ═══════════════════════════════════════════════════════════════════
+ * Les endpoints de création et modification acceptent maintenant
+ * le champ tagIds dans les DTOs. Le contrôleur passe ces tagIds
+ * au TaskManager qui gère l'association via TagPort.
+ *
+ * Les réponses incluent maintenant les tags associés à chaque tâche
+ * via TaskResponse.fromDomainWithTags() quand les tags sont chargés.
+ * Pour la liste paginée, les tags ne sont PAS chargés (performance).
+ * Pour le détail d'une tâche (GET /{id}), les tags SONT chargés.
+ * ═══════════════════════════════════════════════════════════════════
+ *
  * ENDPOINTS :
  * ──────────
  * POST   /api/v1/tasks            → Créer une tâche
@@ -71,6 +88,16 @@ public class TaskController {
     private final TaskManager taskManager;
 
     /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Injection du TagPort pour charger les tags
+     * ═══════════════════════════════════════════════════════════════════
+     * Le TagPort permet de charger les tags associés à une tâche
+     * pour les inclure dans la réponse TaskResponse.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final TagPort tagPort;
+
+    /**
      * POST /api/v1/tasks — Créer une nouvelle tâche.
      *
      * @Valid : Active la validation Jakarta (annotations sur TaskCreateRequest).
@@ -78,6 +105,13 @@ public class TaskController {
      * (contient l'email, le rôle, les authorities).
      *
      * RETOURNE 201 Created avec Location header.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Support des tagIds à la création
+     * ═══════════════════════════════════════════════════════════════════
+     * Le champ tagIds du TaskCreateRequest est passé au TaskManager
+     * qui associe chaque tag à la tâche via TagPort.addTagToTask().
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping
     public ResponseEntity<?> createTask(
@@ -89,7 +123,8 @@ public class TaskController {
 
         Task created = taskManager.createTask(
                 request.title(), request.description(), username,
-                request.priority(), request.dueDate(), request.assigneeId()
+                request.priority(), request.dueDate(), request.assigneeId(),
+                request.tagIds()    // ← PHASE 3 — FEATURE 3 : Tags à la création
         );
 
         // CORRECTION : Utilisation de TaskResponse.fromDomain() au lieu de
@@ -104,7 +139,17 @@ public class TaskController {
         // APRÈS : TaskResponse.fromDomain(created)
         //   → Utilise task.createdAt() qui est la VRAIE date de création
         //   → Cohérent avec toutes les autres méthodes (getTaskById, etc.)
-        TaskResponse response = TaskResponse.fromDomain(created);
+        //
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — FEATURE 3 : Charger les tags pour la réponse
+        // ═══════════════════════════════════════════════════════════════════
+        // Après la création, on charge les tags associés pour les inclure
+        // dans la réponse. Cela permet au frontend de les afficher immédiatement.
+        // ═══════════════════════════════════════════════════════════════════
+        List<TagResponse> tags = tagPort.findTagsByTaskId(created.id()).stream()
+                .map(TagResponse::fromDomain)
+                .toList();
+        TaskResponse response = TaskResponse.fromDomainWithTags(created, tags);
 
         return ResponseEntity.created(URI.create("/api/v1/tasks/" + response.id())).body(response);
     }
@@ -118,6 +163,10 @@ public class TaskController {
      *
      * Tous les @RequestParam sont optionnels (required = false).
      * Si un paramètre est absent, le filtre est ignoré (null).
+     *
+     * NOTE : Les tags ne sont PAS chargés dans la liste paginée
+     * pour des raisons de performance (N+1 queries).
+     * Le frontend doit faire un GET /tasks/{id} pour obtenir les tags.
      */
     @GetMapping
     public ResponseEntity<?> getTasks(
@@ -182,6 +231,13 @@ public class TaskController {
      *
      * RBAC : ADMIN/MANAGER voient toutes les tâches.
      * USER ne voit que ses propres tâches.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Charger les tags dans le détail
+     * ═══════════════════════════════════════════════════════════════════
+     * Le détail d'une tâche inclut maintenant les tags associés.
+     * Cela permet au frontend d'afficher les tags dans la vue détaillée.
+     * ═══════════════════════════════════════════════════════════════════
      */
     @GetMapping("/{id}")
     public ResponseEntity<?> getTaskById(@PathVariable String id,
@@ -190,7 +246,13 @@ public class TaskController {
         String role = extractRole(authentication);
         Optional<Task> taskOpt = taskManager.getTaskById(id, username, role);
         if (taskOpt.isPresent()) {
-            return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+            // ═══════════════════════════════════════════════════════════════════
+            // PHASE 3 — FEATURE 3 : Charger les tags pour le détail
+            // ═══════════════════════════════════════════════════════════════════
+            List<TagResponse> tags = tagPort.findTagsByTaskId(id).stream()
+                    .map(TagResponse::fromDomain)
+                    .toList();
+            return ResponseEntity.ok(TaskResponse.fromDomainWithTags(taskOpt.get(), tags));
         }
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
@@ -205,6 +267,13 @@ public class TaskController {
     // APRÈS : @Valid @RequestBody TaskUpdateRequest request
     //   → Les annotations @Size, @NotBlank du DTO sont vérifiées
     //   → Si validation échoue → 400 Bad Request automatique
+    //
+    // ═══════════════════════════════════════════════════════════════════
+    // PHASE 3 — FEATURE 3 : Support des tagIds à la modification
+    // ═══════════════════════════════════════════════════════════════════
+    // Le champ tagIds du TaskUpdateRequest est passé au TaskManager
+    // qui synchronise les associations tag ↔ tâche.
+    // ═══════════════════════════════════════════════════════════════════
     @PutMapping("/{id}")
     public ResponseEntity<?> updateTask(@PathVariable String id,
                                         @Valid @RequestBody TaskUpdateRequest request,  // ← CORRECTION B8
@@ -213,8 +282,15 @@ public class TaskController {
         String role = extractRole(authentication);
         Optional<Task> taskOpt = taskManager.updateTask(id, username, role,
                 request.title(), request.description(),
-                request.priority(), request.dueDate());
-        if (taskOpt.isPresent()) return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+                request.priority(), request.dueDate(),
+                request.tagIds());    // ← PHASE 3 — FEATURE 3 : Tags à la modification
+        if (taskOpt.isPresent()) {
+            // Charger les tags pour la réponse
+            List<TagResponse> tags = tagPort.findTagsByTaskId(id).stream()
+                    .map(TagResponse::fromDomain)
+                    .toList();
+            return ResponseEntity.ok(TaskResponse.fromDomainWithTags(taskOpt.get(), tags));
+        }
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("message", "Tâche non trouvée ou accès non autorisée"));
     }
@@ -227,6 +303,14 @@ public class TaskController {
      *
      * UTILISATION PAR LE KANBAN : Le frontend Kanban appelle cet endpoint
      * quand l'utilisateur fait un drag & drop d'une carte vers une autre colonne.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — FEATURE 3 : Charger les tags dans la réponse
+     * ═══════════════════════════════════════════════════════════════════
+     * Le changement de statut retourne maintenant la tâche avec ses tags.
+     * Cela permet au Kanban de mettre à jour l'affichage des tags
+     * sans requête supplémentaire.
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PatchMapping("/{id}/status")
     public ResponseEntity<?> updateTaskStatus(@PathVariable String id,
@@ -242,7 +326,13 @@ public class TaskController {
         }
         Optional<Task> taskOpt = taskManager.updateTaskStatus(
                 id, username, role, request.status());
-        if (taskOpt.isPresent()) return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        if (taskOpt.isPresent()) {
+            // Charger les tags pour la réponse
+            List<TagResponse> tags = tagPort.findTagsByTaskId(id).stream()
+                    .map(TagResponse::fromDomain)
+                    .toList();
+            return ResponseEntity.ok(TaskResponse.fromDomainWithTags(taskOpt.get(), tags));
+        }
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("message", "Tâche non trouvée ou accès non autorisé"));
     }
@@ -276,7 +366,13 @@ public class TaskController {
         }
 
         Optional<Task> taskOpt = taskManager.assignTask(id, username, role, assigneeId);
-        if (taskOpt.isPresent()) return ResponseEntity.ok(TaskResponse.fromDomain(taskOpt.get()));
+        if (taskOpt.isPresent()) {
+            // Charger les tags pour la réponse
+            List<TagResponse> tags = tagPort.findTagsByTaskId(id).stream()
+                    .map(TagResponse::fromDomain)
+                    .toList();
+            return ResponseEntity.ok(TaskResponse.fromDomainWithTags(taskOpt.get(), tags));
+        }
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("message", "Tâche non trouvée"));
     }
