@@ -2,8 +2,11 @@ package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.domain.event.TaskAuditEvent;
 import com.tasksphere.core.dto.UserInfo;
 import com.tasksphere.core.port.out.EventPublisherPort;
+import com.tasksphere.core.port.out.TagPort;
+import com.tasksphere.core.port.out.TaskChangeLogPort;
 import com.tasksphere.core.port.out.TaskPersistencePort;
 import com.tasksphere.core.port.out.UserInformationPort;
 import org.junit.jupiter.api.DisplayName;
@@ -64,6 +67,27 @@ import static org.mockito.Mockito.*;
  * 7. Tests pour updateTask() — avec rôle
  * 8. Tests pour deleteTask() — ADMIN vs propriétaire vs non-propriétaire
  *
+ * CORRECTIONS APPORTÉES (v3 — Phase 3 Feature 2 & 3) :
+ * ──────────────────────────────────────────────────────
+ * 9. Ajout des mocks manquants pour les nouvelles dépendances Phase 3 :
+ *    - TaskChangeLogPort (Feature 2 : audit trail détaillé champ par champ)
+ *    - TagPort (Feature 3 : gestion des tags/labels)
+ *    Ces mocks sont obligatoires car @InjectMocks + @RequiredArgsConstructor
+ *    fait de l'injection par constructeur : Mockito doit trouver un mock
+ *    pour CHAQUE paramètre du constructeur généré par Lombok.
+ *
+ * 10. Mise à jour de toutes les signatures d'appel :
+ *     - createTask() : ajout du 7e paramètre List<String> tagIds (null si pas de tags)
+ *     - updateTask() : ajout du 8e paramètre List<String> tagIds (null si pas de tags)
+ *
+ * 11. Mise à jour des vérifications d'audit :
+ *     Le TaskManager utilise désormais eventPublisher.publishAuditEvent()
+ *     (event-driven audit) au lieu de activityLogService.log() (appel direct).
+ *     Les verify() sont donc mis à jour pour vérifier l'événement publié.
+ *
+ * 12. Ajout du stubbing de resolveAssigneeToEmail() pour les tests
+ *     d'assignation (le TaskManager résout l'assigneeId en email).
+ *
  * PRINCIPE DE MOCKITO :
  * ─────────────────────
  * @Mock crée un FAUX objet → on configure son comportement avec when().thenReturn()
@@ -91,6 +115,28 @@ class TaskManagerTest {
     @Mock
     private UserInformationPort userInformationPort;
 
+    /**
+     * PHASE 3 — FEATURE 2 : Mock du port de persistance des changements.
+     * Obligatoire car TaskManager.injecte TaskChangeLogPort via constructeur.
+     */
+    @Mock
+    private TaskChangeLogPort changeLogPort;
+
+    /**
+     * PHASE 3 — FEATURE 3 : Mock du port de persistance des tags.
+     * Obligatoire car TaskManager injecte TagPort via constructeur.
+     */
+    @Mock
+    private TagPort tagPort;
+
+    /**
+     * NOTE : ActivityLogService n'est PLUS une dépendance directe de TaskManager
+     * depuis l'introduction de l'audit event-driven (Phase 2 — Tâche 4).
+     * Le TaskManager publie un TaskAuditEvent via eventPublisher.publishAuditEvent(),
+     * et c'est le AuditEventListener qui appelle ensuite ActivityLogService.log().
+     * On garde ce mock pour compatibilité ascendante, mais il n'est pas injecté
+     * dans TaskManager.
+     */
     @Mock
     private ActivityLogService activityLogService;
 
@@ -127,12 +173,12 @@ class TaskManagerTest {
 
             // Vérifier que persistencePort.save() a été appelé exactement 1 fois
             verify(persistencePort, times(1)).save(any(Task.class));
-            // Vérifier que l'événement a été publié
+            // Vérifier que l'événement de création a été publié
             verify(eventPublisher, times(1)).publishTaskCreated(any());
-            // Vérifier que l'audit a été enregistré
-            verify(activityLogService, times(1)).log(
-                    eq(ActivityLog.Action.TASK_CREATED), anyString(),
-                    eq("saadoune@tasksphere.com"), anyString(), anyString());
+            // Vérifier que l'événement d'audit a été publié (audit event-driven)
+            // Phase 2 — Tâche 4 : l'audit passe par eventPublisher.publishAuditEvent()
+            // au lieu de l'appel direct à activityLogService.log()
+            verify(eventPublisher, times(1)).publishAuditEvent(any(TaskAuditEvent.class));
             // Vérifier que getUserInfo n'a PAS été appelé (pas d'assignation)
             verify(userInformationPort, never()).getUserInfo(anyString());
         }
@@ -150,18 +196,22 @@ class TaskManagerTest {
         }
 
         @Test
-        @DisplayName("Version 6 params avec priorité HIGH et dueDate")
+        @DisplayName("Version 7 params avec priorité HIGH et dueDate")
         void withFullParams_shouldSetAllFields() {
             // ICI on stub getUserInfo car assigneeId est non-null → RBAC vérifié
             when(userInformationPort.getUserInfo("manager@tasksphere.com"))
                     .thenReturn(new UserInfo("manager", "ROLE_MANAGER"));
+            // Phase 3 — CORRECTION UUID→EMAIL : resolveAssigneeToEmail est appelé
+            // pour résoudre l'assigneeId en email avant l'assignation
+            when(userInformationPort.resolveAssigneeToEmail("saadoune@tasksphere.com"))
+                    .thenReturn("saadoune@tasksphere.com");
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             LocalDate dueDate = LocalDate.of(2026, 6, 15);
             Task result = taskManager.createTask(
                     "Tâche complète", "Description", "manager@tasksphere.com",
-                    "HIGH", dueDate, "saadoune@tasksphere.com"
+                    "HIGH", dueDate, "saadoune@tasksphere.com", null
             );
 
             assertThat(result.priority()).isEqualTo(Task.TaskPriority.HIGH);
@@ -178,7 +228,7 @@ class TaskManagerTest {
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             Task result = taskManager.createTask("Test", "Desc", "user@test.com",
-                    "high", null, null);
+                    "high", null, null, null);
 
             // "high".toUpperCase() = "HIGH" → valeur valide → acceptée
             assertThat(result.priority()).isEqualTo(Task.TaskPriority.HIGH);
@@ -192,7 +242,7 @@ class TaskManagerTest {
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             Task result = taskManager.createTask("Test", "Desc", "user@test.com",
-                    "URGENT", null, null);
+                    "URGENT", null, null, null);
 
             // "URGENT".toUpperCase() = "URGENT" → pas dans l'enum → MEDIUM par défaut
             assertThat(result.priority()).isEqualTo(Task.TaskPriority.MEDIUM);
@@ -209,7 +259,7 @@ class TaskManagerTest {
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             Task result = taskManager.createTask("Test", "Desc", "user@test.com",
-                    null, null, "assignee@test.com");
+                    null, null, "assignee@test.com", null);
 
             // L'assignation doit être ignorée car l'utilisateur est USER
             assertThat(result.assigneeId()).isNull();
@@ -220,11 +270,14 @@ class TaskManagerTest {
         void managerAssigning_shouldSucceed() {
             when(userInformationPort.getUserInfo("manager@test.com"))
                     .thenReturn(new UserInfo("manager", "ROLE_MANAGER"));
+            // Phase 3 — CORRECTION UUID→EMAIL : resolveAssigneeToEmail est appelé
+            when(userInformationPort.resolveAssigneeToEmail("assignee@test.com"))
+                    .thenReturn("assignee@test.com");
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             Task result = taskManager.createTask("Test", "Desc", "manager@test.com",
-                    null, null, "assignee@test.com");
+                    null, null, "assignee@test.com", null);
 
             assertThat(result.assigneeId()).isEqualTo("assignee@test.com");
         }
@@ -234,11 +287,14 @@ class TaskManagerTest {
         void adminAssigning_shouldSucceed() {
             when(userInformationPort.getUserInfo("admin@test.com"))
                     .thenReturn(new UserInfo("admin", "ROLE_ADMIN"));
+            // Phase 3 — CORRECTION UUID→EMAIL : resolveAssigneeToEmail est appelé
+            when(userInformationPort.resolveAssigneeToEmail("assignee@test.com"))
+                    .thenReturn("assignee@test.com");
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             Task result = taskManager.createTask("Test", "Desc", "admin@test.com",
-                    null, null, "assignee@test.com");
+                    null, null, "assignee@test.com", null);
 
             assertThat(result.assigneeId()).isEqualTo("assignee@test.com");
         }
@@ -330,9 +386,10 @@ class TaskManagerTest {
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
+            // Phase 3 — Feature 3 : 8e paramètre tagIds = null (pas de modification de tags)
             Optional<Task> result = taskManager.updateTask(
                     "task-1", "user@test.com", "USER",
-                    "Nouveau titre", null, null, null);
+                    "Nouveau titre", null, null, null, null);
 
             assertThat(result).isPresent();
             assertThat(result.get().title()).isEqualTo("Nouveau titre");
@@ -350,7 +407,7 @@ class TaskManagerTest {
 
             Optional<Task> result = taskManager.updateTask(
                     "task-1", "assignee@test.com", "USER",
-                    "Titre modifié", null, null, null);
+                    "Titre modifié", null, null, null, null);
 
             assertThat(result).isPresent();
         }
@@ -362,7 +419,7 @@ class TaskManagerTest {
                     .thenReturn(Optional.empty());
 
             Optional<Task> result = taskManager.updateTask(
-                    "task-999", "user@test.com", "USER", "Titre", null, null, null);
+                    "task-999", "user@test.com", "USER", "Titre", null, null, null, null);
 
             assertThat(result).isEmpty();
             verify(persistencePort, never()).save(any());
@@ -379,7 +436,7 @@ class TaskManagerTest {
 
             Optional<Task> result = taskManager.updateTask(
                     "task-1", "admin@test.com", "ADMIN",
-                    "Titre admin", null, "HIGH", null);
+                    "Titre admin", null, "HIGH", null, null);
 
             assertThat(result).isPresent();
             assertThat(result.get().priority()).isEqualTo(Task.TaskPriority.HIGH);
@@ -466,6 +523,9 @@ class TaskManagerTest {
         void manager_shouldAssign() {
             Task existing = Task.create("Tâche", "Desc", "user@test.com");
             when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            // Phase 3 — CORRECTION UUID→EMAIL : resolveAssigneeToEmail est appelé
+            when(userInformationPort.resolveAssigneeToEmail("assignee@test.com"))
+                    .thenReturn("assignee@test.com");
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -481,6 +541,9 @@ class TaskManagerTest {
         void admin_shouldAssign() {
             Task existing = Task.create("Tâche", "Desc", "user@test.com");
             when(persistencePort.findById("task-1")).thenReturn(Optional.of(existing));
+            // Phase 3 — CORRECTION UUID→EMAIL : resolveAssigneeToEmail est appelé
+            when(userInformationPort.resolveAssigneeToEmail("assignee@test.com"))
+                    .thenReturn("assignee@test.com");
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -619,21 +682,34 @@ class TaskManagerTest {
     class AuditTrail {
 
         @Test
-        @DisplayName("Si l'audit échoue, l'opération métier réussit quand même")
-        void auditFailure_shouldNotBlockBusinessOperation() {
-            // ARRANGE : l'audit lève une exception
+        @DisplayName("L'audit est event-driven : la publication d'événement ne bloque pas la création")
+        void auditEventPublishing_shouldNotBlockBusinessOperation() {
+            // ARRANGE : préparer le comportement des mocks
             // NOTE : pas de stubbing de getUserInfo car assigneeId = null (3 params)
+            //
+            // PHASE 2 — TÂCHE 4 : Architecture event-driven
+            // ────────────────────────────────────────────────
+            // Dans l'architecture actuelle, l'audit est géré par événement :
+            // 1. TaskManager publie un TaskAuditEvent via eventPublisher.publishAuditEvent()
+            // 2. Le AuditEventListener (@TransactionalEventListener AFTER_COMMIT) réceptionne l'événement
+            // 3. Le listener appelle ActivityLogService.log() dans une NOUVELLE transaction
+            //
+            // AVANTAGE : L'audit s'exécute APRÈS le commit métier.
+            // Si l'audit échoue au niveau du listener, l'opération métier est DÉJÀ commitée.
+            // L'événement est publié de manière synchrone dans la même transaction,
+            // mais le TRAITEMENT de l'événement (par le listener) est post-commit.
             when(persistencePort.save(any(Task.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
-            doThrow(new RuntimeException("DB audit indisponible"))
-                    .when(activityLogService).log(any(), anyString(), anyString(), anyString(), anyString());
 
-            // ACT : la création ne doit PAS planter
-            Task result = taskManager.createTask("Test audit fail", "Desc", "user@test.com");
+            // ACT : la création doit réussir et publier l'événement d'audit
+            Task result = taskManager.createTask("Test audit event", "Desc", "user@test.com");
 
-            // ASSERT : la tâche est créée malgré l'échec de l'audit
+            // ASSERT : la tâche est créée avec succès
             assertThat(result).isNotNull();
-            assertThat(result.title()).isEqualTo("Test audit fail");
+            assertThat(result.title()).isEqualTo("Test audit event");
+
+            // L'événement d'audit a bien été publié (le traitement se fait post-commit)
+            verify(eventPublisher, times(1)).publishAuditEvent(any(TaskAuditEvent.class));
         }
     }
 }
