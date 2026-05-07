@@ -40,6 +40,29 @@ import java.util.UUID;
  * Ce record est dans le DOMAINE (cœur). Pas de dépendance framework.
  * Les notifications sont envoyées via le port NotificationPort
  * et l'adaptateur WebSocketNotificationAdapter.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION PHASE 3 — Ajout du champ actorUsername
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ * Le champ actorUsername existait dans NotificationEntity (colonne actor_username)
+ * mais n'était PAS dans le domaine Notification. Cela causait une perte de données
+ * dans la chaîne Entity → Domain → DTO : l'acteur était perdu lors de la
+ * conversion Entity.toDomain() car le domaine n'avait pas ce champ.
+ *
+ * SOLUTION :
+ * Ajout de actorUsername dans le record Notification (position 8, avant read).
+ * Cela permet de :
+ * 1. Préserver l'acteur à travers toute la chaîne Entity → Domain → DTO
+ * 2. D'afficher "qui a déclenché l'action" dans le frontend
+ * 3. De simplifier le constructeur NotificationEntity (plus besoin de param séparé)
+ *
+ * NOTE SUR LA POSITION DU CHAMP :
+ * actorUsername est placé APRÈS relatedTaskTitle et AVANT read pour
+ * regrouper logiquement les champs d'identification (qui a fait quoi)
+ * avant les champs d'état (read, createdAt).
+ * ═══════════════════════════════════════════════════════════════════
  */
 public record Notification(
         String id,                  // UUID unique
@@ -49,6 +72,21 @@ public record Notification(
         String recipientUsername,    // Email du destinataire
         String relatedTaskId,       // ID de la tâche concernée (optionnel)
         String relatedTaskTitle,    // Titre de la tâche (denormalized, optionnel)
+
+        /**
+         * ═══════════════════════════════════════════════════════════════════
+         * PHASE 3 — FEATURE 1 : Acteur de la notification
+         * ═══════════════════════════════════════════════════════════════════
+         * L'utilisateur qui a déclenché l'action (ex: celui qui a assigné
+         * la tâche). Peut être null pour les événements système.
+         *
+         * Ce champ était absent du domaine mais présent dans l'entité JPA
+         * (actor_username), causant une perte de données dans la chaîne
+         * Entity → Domain → DTO. Son ajout corrige ce problème.
+         * ═══════════════════════════════════════════════════════════════════
+         */
+        String actorUsername,
+
         boolean read,               // Si la notification a été lue
         LocalDateTime createdAt     // Date de création
 ) {
@@ -77,10 +115,12 @@ public record Notification(
      * @param recipientUsername Email du destinataire
      * @param relatedTaskId     ID de la tâche concernée (null si pas de tâche)
      * @param relatedTaskTitle  Titre de la tâche (null si pas de tâche)
+     * @param actorUsername     Email de l'utilisateur qui a déclenché l'action (null si système)
      * @return Une nouvelle instance Notification
      */
     public static Notification create(NotificationType type, String title, String message,
-                                      String recipientUsername, String relatedTaskId, String relatedTaskTitle) {
+                                      String recipientUsername, String relatedTaskId,
+                                      String relatedTaskTitle, String actorUsername) {
         return new Notification(
                 UUID.randomUUID().toString(),
                 type,
@@ -89,6 +129,7 @@ public record Notification(
                 recipientUsername,
                 relatedTaskId,
                 relatedTaskTitle,
+                actorUsername,
                 false,  // Non lue par défaut
                 LocalDateTime.now()
         );
@@ -100,6 +141,6 @@ public record Notification(
      */
     public Notification markAsRead() {
         return new Notification(id, type, title, message, recipientUsername,
-                relatedTaskId, relatedTaskTitle, true, createdAt);
+                relatedTaskId, relatedTaskTitle, actorUsername, true, createdAt);
     }
 }

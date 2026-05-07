@@ -30,14 +30,25 @@ import java.time.LocalDateTime;
  * │  recipientUsername   │  targetUsername        │
  * │  relatedTaskId       │  taskId                │
  * │  relatedTaskTitle    │  taskTitle             │
+ * │  actorUsername       │  actorUsername         │
  * │  read                │  isRead                │
  * │  createdAt           │  createdAt             │
- * │  (N/A)               │  actorUsername         │
  * └──────────────────────┴────────────────────────┘
  *
- * NOTE : actorUsername est ajouté car le domaine Notification
- * ne contient pas l'acteur, mais le frontend en a besoin
- * pour l'affichage (qui a déclenché l'action).
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION PHASE 3 — actorUsername maintenant dans le domaine
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT : actorUsername n'était PAS dans le domaine Notification.
+ * Le constructeur prenait un paramètre séparé String actorUsername.
+ * La méthode toDomain() ne pouvait PAS mapper ce champ car il
+ * n'existait pas dans le domaine → perte de données.
+ *
+ * APRÈS : actorUsername EST dans le domaine Notification.
+ * Le constructeur obtient actorUsername depuis notification.actorUsername().
+ * La méthode toDomain() mappe actorUsername depuis l'entité vers le domaine.
+ * La chaîne Entity → Domain → DTO est maintenant complète.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Entity
 @Table(name = "notifications")
@@ -90,13 +101,17 @@ public class NotificationEntity {
      * NOTE : Le domaine Notification utilise recipientUsername
      * tandis que la table utilise target_username. Le mapping
      * est fait ici.
+     *
+     * CORRECTION : actorUsername est maintenant obtenu depuis
+     * notification.actorUsername() au lieu d'un paramètre séparé,
+     * car le domaine Notification inclut désormais ce champ.
      */
-    public NotificationEntity(Notification notification, String actorUsername) {
+    public NotificationEntity(Notification notification) {
         this.id = notification.id();
         this.type = notification.type().name();
         this.title = notification.title();
         this.message = notification.message();
-        this.actorUsername = actorUsername;
+        this.actorUsername = notification.actorUsername();
         this.targetUsername = notification.recipientUsername();
         this.taskId = notification.relatedTaskId();
         this.taskTitle = notification.relatedTaskTitle();
@@ -107,9 +122,10 @@ public class NotificationEntity {
     /**
      * Conversion vers le domaine Notification.
      *
-     * NOTE : On reconstruit un objet domaine à partir de l'entité JPA.
-     * Le champ actorUsername n'est PAS dans le domaine Notification
-     * mais est exposé séparément dans le DTO NotificationResponse.
+     * CORRECTION : On mappe maintenant actorUsername depuis l'entité
+     * vers le domaine, car le domaine Notification inclut ce champ.
+     * Cela corrige la perte de données dans la chaîne
+     * Entity → Domain → DTO.
      */
     public Notification toDomain() {
         return new Notification(
@@ -120,6 +136,7 @@ public class NotificationEntity {
                 targetUsername,
                 taskId,
                 taskTitle,
+                actorUsername,
                 isRead,
                 createdAt
         );

@@ -7,6 +7,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -132,6 +133,47 @@ public class GlobalExceptionHandler {
         return buildErrorResponse(
                 HttpStatus.BAD_REQUEST,
                 ex.getMessage(),
+                null
+        );
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * CORRECTION PHASE 3 : Handler pour NoResourceFoundException
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PROBLÈME :
+     * Quand un endpoint n'existe pas (ex: /h2-console/login.jsp),
+     * Spring lève NoResourceFoundException. Sans handler spécifique,
+     * cette exception est attrapée par le handler générique (Exception.class)
+     * qui la loggue comme "UNEXPECTED ERROR" au niveau ERROR.
+     * Cela pollue les logs avec de fausses alertes pour des requêtes
+     * normales (scans de sécurité, favicon, etc.).
+     *
+     * SOLUTION :
+     * Ajouter un handler spécifique qui :
+     * 1. Retourne 404 NOT FOUND (au lieu de 500)
+     * 2. Loggue au niveau DEBUG (pas ERROR) car une ressource non trouvée
+     *    est un événement NORMAL, pas une erreur inattendue
+     * 3. Ne révèle pas de détails techniques dans la réponse
+     *
+     * EXEMPLES DE DÉCLENCHEMENT :
+     * - Quelqu'un tente d'accéder à /h2-console/login.jsp (console H2 désactivée)
+     * - Scan de sécurité qui essaie des chemins (/admin, /.env, /wp-login.php)
+     * - Le navigateur demande /favicon.ico
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleNoResourceFound(
+            NoResourceFoundException ex) {
+
+        // Log DEBUG car une ressource manquante est un événement normal
+        // (scan de sécurité, favicon, chemin inexistant, etc.)
+        log.debug("RESOURCE NOT FOUND : {}", ex.getMessage());
+
+        return buildErrorResponse(
+                HttpStatus.NOT_FOUND,
+                "Ressource non trouvée",
                 null
         );
     }
