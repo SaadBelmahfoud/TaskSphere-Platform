@@ -75,6 +75,21 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * On logue l'exception COMPLÈTE (stack trace incluse) au niveau ERROR
  * pour permettre un diagnostic rapide en production. L'audit reste
  * un "best effort" — l'exception n'est JAMAIS propagée.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION PHASE 3 — actorUsername ajouté à Notification.create()
+ * ═══════════════════════════════════════════════════════════════════
+ * PROBLÈME :
+ * Notification.create() attend maintenant 7 paramètres car le champ
+ * actorUsername a été ajouté au domaine Notification. L'appel avec
+ * seulement 6 paramètres causait une erreur de compilation :
+ *   required: NotificationType, String, String, String, String, String, String
+ *   found:    NotificationType, String, String, String, String, String
+ *
+ * SOLUTION :
+ * Ajout du 7ème paramètre event.username() qui correspond à l'acteur
+ * qui a déclenché l'action. Dans le contexte de l'audit, l'acteur
+ * et le destinataire sont le même (confirmation d'action).
  * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
@@ -134,6 +149,10 @@ public class TaskAuditEventListener {
             // Dans une version future, on pourrait aussi notifier l'assignataire
             // et le créateur de la tâche (nécessiterait un port pour récupérer
             // ces informations depuis la tâche).
+            //
+            // CORRECTION PHASE 3 : Notification.create() prend maintenant 7 params
+            // car actorUsername a été ajouté au domaine Notification.
+            // Le 7ème param event.username() = l'acteur qui a déclenché l'action.
             // ═══════════════════════════════════════════════════════════════════
             Notification.NotificationType type = determineNotificationType(event.action());
             Notification notification = Notification.create(
@@ -142,7 +161,8 @@ public class TaskAuditEventListener {
                     event.description(),
                     event.username(),    // Destinataire = acteur (confirmation)
                     event.taskId(),
-                    event.taskTitle()
+                    event.taskTitle(),
+                    event.username()     // Acteur = celui qui a déclenché l'action (CORRECTION : 7ème param)
             );
             notificationService.notifyUser(event.username(), notification);
 

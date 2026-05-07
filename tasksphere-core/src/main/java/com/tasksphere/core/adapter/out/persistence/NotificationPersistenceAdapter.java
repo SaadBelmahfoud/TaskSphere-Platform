@@ -22,11 +22,29 @@ import java.util.Optional;
  * Cet adaptateur traduit les appels du port (domaine) en opérations
  * JPA via NotificationRepository. Le domaine ne connaît PAS JPA.
  *
- * NOTE SUR actorUsername :
- * Le domaine Notification ne contient pas actorUsername, mais
- * la table notifications en a besoin. Le port accepte donc
- * un paramètre supplémentaire actorUsername dans save() qui
- * est passé à l'entité JPA.
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION PHASE 3 — actorUsername maintenant dans le domaine
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT : actorUsername n'était PAS dans le domaine Notification.
+ * Le port save() prenait un paramètre séparé String actorUsername,
+ * et le constructeur NotificationEntity(notification, actorUsername)
+ * avait 2 arguments.
+ *
+ * APRÈS : actorUsername EST dans le domaine Notification.
+ * Le constructeur NotificationEntity(notification) n'a plus qu'1 argument
+ * car actorUsername est obtenu via notification.actorUsername().
+ * Le paramètre actorUsername du port save() est conservé pour
+ * compatibilité ascendante mais n'est plus utilisé directement
+ * dans le constructeur de l'entité (il est déjà dans le domaine).
+ *
+ * NOTE SUR LE PARAMÈTRE actorUsername DU PORT :
+ * NotificationPort.save(notification, actorUsername) conserve son
+ * signature pour compatibilité. L'actorUsername passé en paramètre
+ * devrait être le même que notification.actorUsername(). Dans une
+ * version future, on pourrait simplifier le port en retirant ce
+ * paramètre redondant.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @Component
@@ -37,9 +55,11 @@ public class NotificationPersistenceAdapter implements NotificationPort {
 
     @Override
     public Notification save(Notification notification, String actorUsername) {
-        log.debug("ADAPTATEUR JPA : Sauvegarde de la notification '{}' pour {}",
-                notification.title(), notification.recipientUsername());
-        NotificationEntity entity = new NotificationEntity(notification, actorUsername);
+        log.debug("ADAPTATEUR JPA : Sauvegarde de la notification '{}' pour {} (acteur: {})",
+                notification.title(), notification.recipientUsername(),
+                notification.actorUsername());
+        // CORRECTION PHASE 3 : Constructeur 1 arg (actorUsername est maintenant dans le domaine)
+        NotificationEntity entity = new NotificationEntity(notification);
         NotificationEntity saved = notificationRepository.save(entity);
         return saved.toDomain();
     }
