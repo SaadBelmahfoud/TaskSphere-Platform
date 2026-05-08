@@ -47,6 +47,13 @@ import java.util.Map;
  *   - Inclut le nom du fichier dans le message d'erreur
  *   - Le message retourné au frontend reste générique (sécurité)
  * ═══════════════════════════════════════════════════════════════════
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION ACTIVITY : Username passé au service pour audit
+ * ═══════════════════════════════════════════════════════════════════
+ * La méthode deleteAttachment nécessite maintenant le username
+ * pour publier l'événement d'audit ATTACHMENT_DELETED.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @RestController
@@ -153,11 +160,20 @@ public class AttachmentController {
      * DELETE /api/v1/attachments/{id}
      *
      * Supprime une pièce jointe.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : Username passé au service pour audit
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : attachmentService.deleteAttachment(id)
+     * APRÈS : attachmentService.deleteAttachment(id, username)
+     *   → L'événement ATTACHMENT_DELETED peut enregistrer l'acteur
+     * ═══════════════════════════════════════════════════════════════════
      */
     @DeleteMapping("/attachments/{id}")
     public ResponseEntity<?> deleteAttachment(@PathVariable String id, Authentication authentication) {
-        log.info("CONTROLLER : DELETE /attachments/{} par {}", id, authentication.getName());
-        boolean deleted = attachmentService.deleteAttachment(id);
+        String username = authentication.getName();
+        log.info("CONTROLLER : DELETE /attachments/{} par {}", id, username);
+        boolean deleted = attachmentService.deleteAttachment(id, username);
         if (!deleted) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(Map.of("message", "Pièce jointe non trouvée"));

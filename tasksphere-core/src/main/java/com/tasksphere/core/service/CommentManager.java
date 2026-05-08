@@ -2,7 +2,11 @@ package com.tasksphere.core.service;
 
 import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Comment;
+import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.domain.event.TaskAuditEvent;
 import com.tasksphere.core.port.out.CommentPersistencePort;
+import com.tasksphere.core.port.out.EventPublisherPort;
+import com.tasksphere.core.port.out.TaskPersistencePort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,6 +46,30 @@ import java.util.Optional;
  * - createComment() : accessible à tous les utilisateurs authentifiés
  * - updateComment() : seul le PROPRIÉTAIRE (username) peut modifier
  * - deleteComment() : le PROPRIÉTAIRE ou un ADMIN peuvent supprimer
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION ACTIVITY : Approche événementielle cohérente
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT (PROBLÈME) :
+ *   CommentManager appelait activityLogService.log() directement dans
+ *   la même transaction. Cela causait DEUX problèmes :
+ *   1. Pas de notification WebSocket (seul TaskAuditEventListener
+ *      envoie des notifications, et il ne reçoit QUE les TaskAuditEvent)
+ *   2. taskTitle = null dans les entrées update/delete car le titre
+ *      n'était pas récupéré
+ *
+ * APRÈS :
+ *   CommentManager utilise maintenant EventPublisherPort (comme TaskManager)
+ *   pour publier des TaskAuditEvent. Le TaskAuditEventListener :
+ *   1. Enregistre l'audit log (post-commit, REQUIRES_NEW)
+ *   2. Envoie la notification WebSocket temps réel
+ *   3. taskTitle est récupéré via TaskPersistencePort
+ *
+ * DÉPENDANCES MODIFIÉES :
+ * - ActivityLogService REMPLACÉ par EventPublisherPort
+ * - TaskPersistencePort AJOUTÉ pour récupérer le titre de la tâche
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @Service
@@ -49,7 +77,29 @@ import java.util.Optional;
 public class CommentManager {
 
     private final CommentPersistencePort commentPersistencePort;
-    private final ActivityLogService activityLogService;
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : EventPublisherPort remplace ActivityLogService
+     * ═══════════════════════════════════════════════════════════════════
+     * AVANT : ActivityLogService activityLogService (appel direct, même transaction)
+     * APRÈS : EventPublisherPort eventPublisher (événement post-commit)
+     *   → Cohérent avec TaskManager
+     *   → Permet les notifications WebSocket via TaskAuditEventListener
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final EventPublisherPort eventPublisher;
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : TaskPersistencePort pour taskTitle
+     * ═══════════════════════════════════════════════════════════════════
+     * Nécessaire pour récupérer le titre de la tâche lors des
+     * opérations update/delete de commentaires (où le titre n'est
+     * pas disponible directement). Corrige le bug taskTitle = null.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final TaskPersistencePort taskPersistencePort;
 
     // ═══════════════════════════════════════════════════════
     // LECTURE DES COMMENTAIRES
@@ -81,7 +131,7 @@ public class CommentManager {
      * FLUX :
      * 1. Créer le Comment via Factory Method
      * 2. Sauvegarder via le port de persistance
-     * 3. Enregistrer l'action dans l'audit log
+     * 3. Publier un événement d'audit COMMENT_ADDED (post-commit)
      *
      * @param content  Le contenu du commentaire (validé par @NotBlank dans le DTO)
      * @param username L'email de l'auteur (extrait du JWT)
@@ -96,12 +146,19 @@ public class CommentManager {
         Comment comment = Comment.create(content, username, taskId);
         Comment savedComment = commentPersistencePort.save(comment);
 
-        // Enregistrer l'action dans l'audit log (même transaction)
-        activityLogService.log(
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — CORRECTION ACTIVITY : Événement au lieu d'appel direct
+        // ═══════════════════════════════════════════════════════════════════
+        // AVANT : activityLogService.log(COMMENT_ADDED, ..., taskId, taskTitle)
+        //   → Pas de notification WebSocket
+        // APRÈS : eventPublisher.publishAuditEvent(TaskAuditEvent)
+        //   → Audit log + notification WebSocket via TaskAuditEventListener
+        // ═══════════════════════════════════════════════════════════════════
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
                 ActivityLog.Action.COMMENT_ADDED,
                 "Commentaire ajouté sur '" + taskTitle + "'",
                 username, taskId, taskTitle
-        );
+        ));
 
         return savedComment;
     }
@@ -143,11 +200,25 @@ public class CommentManager {
         Comment updated = existing.get().updateContent(newContent);
         Comment saved = commentPersistencePort.save(updated);
 
-        activityLogService.log(
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — CORRECTION ACTIVITY : taskTitle récupéré + événement
+        // ═══════════════════════════════════════════════════════════════════
+        // AVANT : activityLogService.log(COMMENT_UPDATED, ..., saved.taskId(), null)
+        //   → taskTitle était null → affichage incomplet dans le Dashboard
+        //   → Pas de notification WebSocket
+        // APRÈS : On récupère le titre via TaskPersistencePort
+        //   → taskTitle correct dans l'ActivityLog
+        //   → Notification WebSocket envoyée
+        // ═══════════════════════════════════════════════════════════════════
+        String taskTitle = taskPersistencePort.findById(saved.taskId())
+                .map(Task::title)
+                .orElse("Tâche inconnue");
+
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
                 ActivityLog.Action.COMMENT_UPDATED,
-                "Commentaire modifié",
-                currentUsername, saved.taskId(), null
-        );
+                "Commentaire modifié sur '" + taskTitle + "'",
+                currentUsername, saved.taskId(), taskTitle
+        ));
 
         return Optional.of(saved);
     }
@@ -190,12 +261,25 @@ public class CommentManager {
             return false;  // Accès refusé
         }
 
-        // Log AVANT la suppression (pour garder le taskId dans le log)
-        activityLogService.log(
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — CORRECTION ACTIVITY : taskTitle récupéré + événement
+        // ═══════════════════════════════════════════════════════════════════
+        // AVANT : activityLogService.log(COMMENT_DELETED, ..., toDelete.taskId(), null)
+        //   → taskTitle était null → affichage incomplet dans le Dashboard
+        //   → Pas de notification WebSocket
+        // APRÈS : On récupère le titre via TaskPersistencePort
+        //   → taskTitle correct dans l'ActivityLog
+        //   → Notification WebSocket envoyée
+        // ═══════════════════════════════════════════════════════════════════
+        String taskTitle = taskPersistencePort.findById(toDelete.taskId())
+                .map(Task::title)
+                .orElse("Tâche inconnue");
+
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
                 ActivityLog.Action.COMMENT_DELETED,
-                "Commentaire supprimé",
-                currentUsername, toDelete.taskId(), null
-        );
+                "Commentaire supprimé sur '" + taskTitle + "'",
+                currentUsername, toDelete.taskId(), taskTitle
+        ));
 
         commentPersistencePort.deleteById(commentId);
         return true;

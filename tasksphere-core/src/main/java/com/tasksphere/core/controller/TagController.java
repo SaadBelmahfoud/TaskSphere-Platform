@@ -33,6 +33,15 @@ import java.util.Map;
  * POST   /api/v1/tasks/{taskId}/tags/{tagId}    → Associer un tag à une tâche
  * DELETE /api/v1/tasks/{taskId}/tags/{tagId}     → Retirer un tag d'une tâche
  * GET    /api/v1/tasks/{taskId}/tags     → Lister les tags d'une tâche
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION ACTIVITY : Username passé au TagService
+ * ═══════════════════════════════════════════════════════════════════
+ * Les méthodes addTagToTask, removeTagFromTask et deleteTag de
+ * TagService nécessitent maintenant le username pour publier
+ * les événements d'audit. Le controller extrait le username
+ * du Authentication et le passe au service.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @RestController
@@ -88,11 +97,16 @@ public class TagController {
 
     /**
      * DELETE /api/v1/tags/{id} — Supprimer un tag.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : Username passé au service
+     * ═══════════════════════════════════════════════════════════════════
      */
     @DeleteMapping("/tags/{id}")
     public ResponseEntity<?> deleteTag(@PathVariable String id, Authentication authentication) {
-        log.info("CONTROLLER : DELETE /tags/{} par {}", id, authentication.getName());
-        boolean deleted = tagService.deleteTag(id);
+        String username = authentication.getName();
+        log.info("CONTROLLER : DELETE /tags/{} par {}", id, username);
+        boolean deleted = tagService.deleteTag(id, username);
         if (!deleted) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(Map.of("message", "Tag non trouvé"));
@@ -102,6 +116,10 @@ public class TagController {
 
     /**
      * POST /api/v1/tasks/{taskId}/tags/{tagId} — Associer un tag à une tâche.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : Username passé au service
+     * ═══════════════════════════════════════════════════════════════════
      */
     @PostMapping("/tasks/{taskId}/tags/{tagId}")
     public ResponseEntity<?> addTagToTask(
@@ -109,13 +127,18 @@ public class TagController {
             @PathVariable String tagId,
             Authentication authentication) {
 
-        log.info("CONTROLLER : POST /tasks/{}/tags/{} par {}", taskId, tagId, authentication.getName());
-        tagService.addTagToTask(taskId, tagId);
+        String username = authentication.getName();
+        log.info("CONTROLLER : POST /tasks/{}/tags/{} par {}", taskId, tagId, username);
+        tagService.addTagToTask(taskId, tagId, username);
         return ResponseEntity.ok(Map.of("message", "Tag associé à la tâche"));
     }
 
     /**
      * DELETE /api/v1/tasks/{taskId}/tags/{tagId} — Retirer un tag d'une tâche.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : Username passé au service
+     * ═══════════════════════════════════════════════════════════════════
      */
     @DeleteMapping("/tasks/{taskId}/tags/{tagId}")
     public ResponseEntity<?> removeTagFromTask(
@@ -123,8 +146,9 @@ public class TagController {
             @PathVariable String tagId,
             Authentication authentication) {
 
-        log.info("CONTROLLER : DELETE /tasks/{}/tags/{} par {}", taskId, tagId, authentication.getName());
-        tagService.removeTagFromTask(taskId, tagId);
+        String username = authentication.getName();
+        log.info("CONTROLLER : DELETE /tasks/{}/tags/{} par {}", taskId, tagId, username);
+        tagService.removeTagFromTask(taskId, tagId, username);
         return ResponseEntity.ok(Map.of("message", "Tag retiré de la tâche"));
     }
 

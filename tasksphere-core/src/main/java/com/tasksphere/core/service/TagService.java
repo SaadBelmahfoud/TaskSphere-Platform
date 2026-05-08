@@ -1,7 +1,12 @@
 package com.tasksphere.core.service;
 
+import com.tasksphere.core.domain.ActivityLog;
 import com.tasksphere.core.domain.Tag;
+import com.tasksphere.core.domain.Task;
+import com.tasksphere.core.domain.event.TaskAuditEvent;
+import com.tasksphere.core.port.out.EventPublisherPort;
 import com.tasksphere.core.port.out.TagPort;
+import com.tasksphere.core.port.out.TaskPersistencePort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,6 +35,25 @@ import java.util.List;
  * Si un utilisateur tente de créer "Bug" alors que "bug" existe déjà,
  * le service retourne le tag existant au lieu d'en créer un nouveau.
  * C'est le pattern "Get or Create" (obtenir ou créer).
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION ACTIVITY : Audit des opérations sur les tags
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT (PROBLÈME) :
+ *   Les opérations sur les tags (création, suppression, association,
+ *   retrait) n'étaient PAS tracées dans l'Activity Log.
+ *
+ * APRÈS :
+ *   - createOrGetTag → TAG_CREATED (si nouveau tag créé)
+ *   - deleteTag → TAG_DELETED
+ *   - addTagToTask → TAG_ADDED_TO_TASK (avec titre de la tâche)
+ *   - removeTagFromTask → TAG_REMOVED_FROM_TASK (avec titre de la tâche)
+ *
+ * DÉPENDANCES AJOUTÉES :
+ * - EventPublisherPort : pour publier les événements d'audit
+ * - TaskPersistencePort : pour récupérer le titre de la tâche
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @Service
@@ -37,6 +61,14 @@ import java.util.List;
 public class TagService {
 
     private final TagPort tagPort;
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : Ports pour l'audit
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final EventPublisherPort eventPublisher;
+    private final TaskPersistencePort taskPersistencePort;
 
     /**
      * Crée un nouveau tag ou retourne le tag existant si le nom existe déjà.
@@ -64,6 +96,20 @@ public class TagService {
         Tag newTag = Tag.create(name, color, createdBy);
         Tag saved = tagPort.save(newTag);
         log.info("SERVICE : Tag '{}' créé avec succès (id: {})", name, saved.id());
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3 — CORRECTION ACTIVITY : Audit de la création de tag
+        // ═══════════════════════════════════════════════════════════════════
+        // Pas de taskId/taskTitle pour la création d'un tag (c'est global).
+        // ═══════════════════════════════════════════════════════════════════
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TAG_CREATED,
+                "Tag '" + name + "' créé",
+                createdBy,
+                null,
+                null
+        ));
+
         return saved;
     }
 
@@ -79,18 +125,55 @@ public class TagService {
         return tagPort.findById(id).orElse(null);
     }
 
-    /** Associer un tag à une tâche. */
+    /**
+     * Associer un tag à une tâche.
+     *
+     * PHASE 3 — CORRECTION ACTIVITY : Audit de l'association tag↔tâche
+     */
     @Transactional
-    public void addTagToTask(String taskId, String tagId) {
-        log.info("SERVICE : Ajout du tag {} à la tâche {}", tagId, taskId);
+    public void addTagToTask(String taskId, String tagId, String username) {
+        log.info("SERVICE : Ajout du tag {} à la tâche {} par {}", tagId, taskId, username);
         tagPort.addTagToTask(taskId, tagId);
+
+        // Récupérer les noms pour l'audit
+        String tagName = tagPort.findById(tagId).map(Tag::name).orElse("Inconnu");
+        String taskTitle = taskPersistencePort.findById(taskId)
+                .map(Task::title)
+                .orElse("Tâche inconnue");
+
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TAG_ADDED_TO_TASK,
+                "Tag '" + tagName + "' ajouté à '" + taskTitle + "'",
+                username,
+                taskId,
+                taskTitle
+        ));
     }
 
-    /** Retirer un tag d'une tâche. */
+    /**
+     * Retirer un tag d'une tâche.
+     *
+     * PHASE 3 — CORRECTION ACTIVITY : Audit du retrait tag↔tâche
+     */
     @Transactional
-    public void removeTagFromTask(String taskId, String tagId) {
-        log.info("SERVICE : Retrait du tag {} de la tâche {}", tagId, taskId);
+    public void removeTagFromTask(String taskId, String tagId, String username) {
+        log.info("SERVICE : Retrait du tag {} de la tâche {} par {}", tagId, taskId, username);
+
+        // Récupérer les noms AVANT le retrait pour l'audit
+        String tagName = tagPort.findById(tagId).map(Tag::name).orElse("Inconnu");
+        String taskTitle = taskPersistencePort.findById(taskId)
+                .map(Task::title)
+                .orElse("Tâche inconnue");
+
         tagPort.removeTagFromTask(taskId, tagId);
+
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TAG_REMOVED_FROM_TASK,
+                "Tag '" + tagName + "' retiré de '" + taskTitle + "'",
+                username,
+                taskId,
+                taskTitle
+        ));
     }
 
     /** Trouver les tags d'une tâche. */
@@ -99,12 +182,30 @@ public class TagService {
         return tagPort.findTagsByTaskId(taskId);
     }
 
-    /** Supprimer un tag. */
+    /**
+     * Supprimer un tag.
+     *
+     * PHASE 3 — CORRECTION ACTIVITY : Audit de la suppression de tag
+     */
     @Transactional
-    public boolean deleteTag(String tagId) {
-        log.info("SERVICE : Suppression du tag {}", tagId);
-        if (tagPort.findById(tagId).isEmpty()) return false;
+    public boolean deleteTag(String tagId, String username) {
+        log.info("SERVICE : Suppression du tag {} par {}", tagId, username);
+
+        var existingTag = tagPort.findById(tagId);
+        if (existingTag.isEmpty()) return false;
+
+        String tagName = existingTag.get().name();
         tagPort.deleteById(tagId);
+
+        // Pas de taskId/taskTitle pour la suppression d'un tag (c'est global)
+        eventPublisher.publishAuditEvent(new TaskAuditEvent(
+                ActivityLog.Action.TAG_DELETED,
+                "Tag '" + tagName + "' supprimé",
+                username,
+                null,
+                null
+        ));
+
         return true;
     }
 }

@@ -526,30 +526,56 @@ public class TaskManager {
     // SOFT DELETE AVEC RBAC
     // ═══════════════════════════════════════════════════════
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : taskTitle récupéré avant suppression
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * AVANT (BUG) :
+     *   taskTitle était null dans l'événement d'audit de suppression.
+     *   L'Activity Log affichait un titre vide pour les tâches supprimées.
+     *   Cause : l'événement était publié avec null comme taskTitle.
+     *
+     * APRÈS :
+     *   On récupère le titre de la tâche AVANT le soft-delete.
+     *   La tâche existe encore à ce moment (soft-delete = flag, pas suppression physique).
+     *   L'Activity Log affiche maintenant le titre correct de la tâche supprimée.
+     * ═══════════════════════════════════════════════════════════════════
+     */
     @Transactional
     public boolean deleteTask(String taskId, String currentUsername, String currentRole) {
         if ("ADMIN".equals(currentRole)) {
-            if (persistencePort.findById(taskId).isEmpty()) return false;
+            Task task = persistencePort.findById(taskId).orElse(null);
+            if (task == null) return false;
+
+            // CORRECTION ACTIVITY : Récupérer le titre AVANT le soft-delete
+            String taskTitle = task.title();
+
             persistencePort.softDelete(taskId);
             // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
             eventPublisher.publishAuditEvent(new TaskAuditEvent(
                     ActivityLog.Action.TASK_DELETED,
-                    "Tâche supprimée (ADMIN)",
+                    "Tâche '" + taskTitle + "' supprimée (ADMIN)",
                     currentUsername,
                     taskId,
-                    null
+                    taskTitle
             ));
             return true;
         }
-        if (persistencePort.findByIdAndUserId(taskId, currentUsername).isEmpty()) return false;
+        Task task = persistencePort.findByIdAndUserId(taskId, currentUsername).orElse(null);
+        if (task == null) return false;
+
+        // CORRECTION ACTIVITY : Récupérer le titre AVANT le soft-delete
+        String taskTitle = task.title();
+
         persistencePort.softDelete(taskId);
         // PHASE 2 — TÂCHE 4 : Audit via événement post-commit
         eventPublisher.publishAuditEvent(new TaskAuditEvent(
                 ActivityLog.Action.TASK_DELETED,
-                "Tâche supprimée par son créateur",
+                "Tâche '" + taskTitle + "' supprimée par son créateur",
                 currentUsername,
                 taskId,
-                null
+                taskTitle
         ));
         return true;
     }

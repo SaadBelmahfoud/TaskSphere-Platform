@@ -36,6 +36,17 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * │  TASK_UNASSIGNED       │ Ancien assignataire   │ WARNING        │
  * │  TASK_UPDATED          │ Créateur + Assignataire│ INFO          │
  * │  TASK_DELETED          │ Créateur + Assignataire│ WARNING       │
+ * │  COMMENT_ADDED         │ Acteur (confirmation) │ INFO           │
+ * │  COMMENT_UPDATED       │ Acteur (confirmation) │ INFO           │
+ * │  COMMENT_DELETED       │ Acteur (confirmation) │ INFO           │
+ * │  ATTACHMENT_UPLOADED   │ Acteur (confirmation) │ INFO           │
+ * │  ATTACHMENT_DELETED    │ Acteur (confirmation) │ WARNING        │
+ * │  TAG_ADDED_TO_TASK     │ Acteur (confirmation) │ INFO           │
+ * │  TAG_REMOVED_FROM_TASK │ Acteur (confirmation) │ INFO           │
+ * │  TAG_CREATED           │ Acteur (confirmation) │ INFO           │
+ * │  TAG_DELETED           │ Acteur (confirmation) │ WARNING        │
+ * │  USER_ROLE_CHANGED     │ Acteur (confirmation) │ WARNING        │
+ * │  USER_TOGGLED          │ Acteur (confirmation) │ WARNING        │
  * └──────────────────────────────────────────────────────────────────┘
  *
  * NOTE : Dans cette version, on envoie la notification à l'acteur
@@ -90,6 +101,14 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * Ajout du 7ème paramètre event.username() qui correspond à l'acteur
  * qui a déclenché l'action. Dans le contexte de l'audit, l'acteur
  * et le destinataire sont le même (confirmation d'action).
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION ACTIVITY : Support des nouvelles actions
+ * ═══════════════════════════════════════════════════════════════════
+ * Ajout des cas pour ATTACHMENT_UPLOADED, ATTACHMENT_DELETED,
+ * TAG_CREATED, TAG_DELETED, TAG_ADDED_TO_TASK, TAG_REMOVED_FROM_TASK
+ * dans formatTitle() et determineNotificationType().
  * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
@@ -183,12 +202,20 @@ public class TaskAuditEventListener {
      * LOGIQUE :
      * - TASK_ASSIGNED → WARNING : l'utilisateur doit être alerté d'une assignation
      * - TASK_DELETED → WARNING : action destructive, l'utilisateur doit être informé
+     * - ATTACHMENT_DELETED → WARNING : action destructive (fichier supprimé)
+     * - TAG_DELETED → WARNING : action destructive (tag supprimé)
+     * - USER_ROLE_CHANGED → WARNING : action sensible sur un utilisateur
+     * - USER_TOGGLED → WARNING : action sensible sur un utilisateur
      * - Les autres → INFO : information générale
      */
     private Notification.NotificationType determineNotificationType(ActivityLog.Action action) {
         return switch (action) {
             case TASK_ASSIGNED -> Notification.NotificationType.WARNING;
             case TASK_DELETED -> Notification.NotificationType.WARNING;
+            case ATTACHMENT_DELETED -> Notification.NotificationType.WARNING;
+            case TAG_DELETED -> Notification.NotificationType.WARNING;
+            case USER_ROLE_CHANGED -> Notification.NotificationType.WARNING;
+            case USER_TOGGLED -> Notification.NotificationType.WARNING;
             default -> Notification.NotificationType.INFO;
         };
     }
@@ -197,6 +224,12 @@ public class TaskAuditEventListener {
      * Formate le titre de la notification selon l'action.
      *
      * Le titre est court et lisible pour l'affichage dans un toast/badge.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION ACTIVITY : Titres pour les nouvelles actions
+     * ═══════════════════════════════════════════════════════════════════
+     * Ajout des cas pour les pièces jointes et les tags.
+     * ═══════════════════════════════════════════════════════════════════
      */
     private String formatTitle(ActivityLog.Action action) {
         return switch (action) {
@@ -209,6 +242,15 @@ public class TaskAuditEventListener {
             case COMMENT_ADDED -> "Commentaire ajouté";
             case COMMENT_UPDATED -> "Commentaire modifié";
             case COMMENT_DELETED -> "Commentaire supprimé";
+            // PHASE 3 — CORRECTION ACTIVITY : Pièces jointes
+            case ATTACHMENT_UPLOADED -> "Pièce jointe ajoutée";
+            case ATTACHMENT_DELETED -> "Pièce jointe supprimée";
+            // PHASE 3 — CORRECTION ACTIVITY : Tags
+            case TAG_CREATED -> "Tag créé";
+            case TAG_DELETED -> "Tag supprimé";
+            case TAG_ADDED_TO_TASK -> "Tag ajouté à la tâche";
+            case TAG_REMOVED_FROM_TASK -> "Tag retiré de la tâche";
+            // Administration
             case USER_ROLE_CHANGED -> "Rôle modifié";
             case USER_TOGGLED -> "Statut utilisateur modifié";
         };

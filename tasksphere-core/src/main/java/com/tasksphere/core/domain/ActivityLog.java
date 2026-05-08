@@ -51,6 +51,22 @@ import java.util.UUID;
  * - USER_ROLE_CHANGED : rôle d'un utilisateur modifié par un ADMIN
  * - USER_TOGGLED : utilisateur activé/désactivé par un ADMIN
  *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION ACTIVITY : Ajout des actions manquantes
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT (PROBLÈME) :
+ *   Les actions sur les pièces jointes et les tags n'étaient PAS
+ *   définies dans l'enum. Elles étaient donc invisibles dans
+ *   l'Activity Log et ne déclenchaient aucune notification.
+ *
+ * APRÈS :
+ *   Ajout de 6 nouvelles actions pour couvrir TOUTES les opérations :
+ *   - ATTACHMENT_UPLOADED / ATTACHMENT_DELETED : pièces jointes
+ *   - TAG_ADDED_TO_TASK / TAG_REMOVED_FROM_TASK : associations tag↔tâche
+ *   - TAG_CREATED / TAG_DELETED : gestion des tags
+ * ═══════════════════════════════════════════════════════════════════
+ *
  * ARCHITECTURE HEXAGONALE :
  * ─────────────────────────
  * Ce record est dans le DOMAINE (cœur). Pas de dépendance framework.
@@ -83,6 +99,26 @@ public record ActivityLog(
         COMMENT_ADDED,           // Nouveau commentaire ajouté
         COMMENT_UPDATED,         // Commentaire modifié
         COMMENT_DELETED,         // Commentaire supprimé
+
+        // ═══════════════════════════════════════════════════════════
+        // PHASE 3 — CORRECTION ACTIVITY : Pièces jointes
+        // ═══════════════════════════════════════════════════════════
+        // AVANT : Aucune action pour les pièces jointes → invisibles
+        // APRÈS : Upload et suppression tracés dans l'Activity Log
+        // ═══════════════════════════════════════════════════════════
+        ATTACHMENT_UPLOADED,     // Pièce jointe uploadée sur une tâche
+        ATTACHMENT_DELETED,      // Pièce jointe supprimée
+
+        // ═══════════════════════════════════════════════════════════
+        // PHASE 3 — CORRECTION ACTIVITY : Tags
+        // ═══════════════════════════════════════════════════════════
+        // AVANT : Aucune action pour les tags → invisibles
+        // APRÈS : Création, suppression et association tracées
+        // ═══════════════════════════════════════════════════════════
+        TAG_CREATED,             // Nouveau tag créé
+        TAG_DELETED,             // Tag supprimé
+        TAG_ADDED_TO_TASK,       // Tag associé à une tâche
+        TAG_REMOVED_FROM_TASK,   // Tag retiré d'une tâche
 
         // Actions liées à l'administration
         USER_ROLE_CHANGED,       // Rôle d'un utilisateur modifié
