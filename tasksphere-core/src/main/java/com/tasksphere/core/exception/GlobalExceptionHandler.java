@@ -1,6 +1,8 @@
 package com.tasksphere.core.exception;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -69,9 +71,28 @@ import java.util.Map;
  *   "details": {...},        // Détails spécifiques (optionnel)
  *   "path": "/api/v1/tasks"  // Endpoint qui a causé l'erreur
  * }
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION PHASE 3 — @Order(HIGHEST_PRECEDENCE)
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ * Sans @Order, Spring peut appliquer un autre @ControllerAdvice
+ * (ex: BasicErrorController de Spring Boot) AVANT le nôtre.
+ * → NoResourceFoundException est intercepté par le handler générique
+ *   Exception.class au lieu du handler spécifique.
+ * → Log ERROR avec stack trace complète au lieu de WARN.
+ *
+ * SOLUTION :
+ * @Order(Ordered.HIGHEST_PRECEDENCE) garantit que notre handler
+ * est appelé EN PREMIER, avant tout autre @ControllerAdvice.
+ * Ainsi, le handler spécifique NoResourceFoundException.class
+ * est toujours appelé avant le handler générique Exception.class.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @RestControllerAdvice
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class GlobalExceptionHandler {
 
     /**
@@ -153,9 +174,14 @@ public class GlobalExceptionHandler {
      * SOLUTION :
      * Ajouter un handler spécifique qui :
      * 1. Retourne 404 NOT FOUND (au lieu de 500)
-     * 2. Loggue au niveau DEBUG (pas ERROR) car une ressource non trouvée
+     * 2. Loggue au niveau WARN (pas ERROR) car une ressource non trouvée
      *    est un événement NORMAL, pas une erreur inattendue
      * 3. Ne révèle pas de détails techniques dans la réponse
+     *
+     * NOTE : Avec la correction SecurityConfig (H2 conditionnel),
+     * cette exception ne devrait plus se produire en profil postgres.
+     * Ce handler reste un filet de sécurité pour les autres cas
+     * (favicon.ico, chemins inexistants, scans de sécurité).
      *
      * EXEMPLES DE DÉCLENCHEMENT :
      * - Quelqu'un tente d'accéder à /h2-console/login.jsp (console H2 désactivée)
@@ -167,9 +193,10 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleNoResourceFound(
             NoResourceFoundException ex) {
 
-        // Log DEBUG car une ressource manquante est un événement normal
+        // Log WARN car une ressource manquante est un événement normal
+        // mais on veut tout de même pouvoir la tracer dans les logs
         // (scan de sécurité, favicon, chemin inexistant, etc.)
-        log.debug("RESOURCE NOT FOUND : {}", ex.getMessage());
+        log.warn("RESOURCE NOT FOUND : {}", ex.getMessage());
 
         return buildErrorResponse(
                 HttpStatus.NOT_FOUND,

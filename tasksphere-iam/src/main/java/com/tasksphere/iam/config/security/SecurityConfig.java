@@ -118,6 +118,27 @@ import java.util.List;
  *   → Dev : CORS_ALLOWED_ORIGINS=http://localhost:3000
  *   → Prod : CORS_ALLOWED_ORIGINS=https://tasksphere.example.com
  *   → Multi-origines : CORS_ALLOWED_ORIGINS=http://localhost:3000,https://tasksphere.example.com
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CORRECTION PHASE 3 — Console H2 conditionnelle
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ * En profil postgres, H2 est désactivé (spring.h2.console.enabled=false).
+ * Mais SecurityConfig a toujours .requestMatchers("/h2-console/**").permitAll().
+ * → Les requêtes /h2-console/** passent Spring Security (permitAll)
+ * → Spring MVC cherche un handler → aucun handler H2 n'existe
+ * → ResourceHttpRequestHandler lève NoResourceFoundException
+ * → @RestControllerAdvice ne l'attrape PAS car ResourceHttpRequestHandler
+ *   n'est PAS un @RestController → l'exception remonte au handler générique
+ * → Log ERROR avec stack trace complète (bruit dans les logs)
+ *
+ * SOLUTION :
+ * La règle /h2-console/** n'est ajoutée QUE si spring.h2.console.enabled=true.
+ * En profil postgres (H2 désactivé), les requêtes /h2-console/** sont
+ * rejetées par .anyRequest().authenticated() avec un 401 propre.
+ * En profil dev (H2 activé), la console H2 reste accessible.
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Configuration
 @EnableWebSecurity
@@ -149,6 +170,21 @@ public class SecurityConfig {
     @Value("${cors.allowed-origins:http://localhost:3000}")
     private String allowedOrigins;
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * CORRECTION PHASE 3 : Console H2 conditionnelle
+     * ═══════════════════════════════════════════════════════════════════
+     * Lit la propriété spring.h2.console.enabled pour déterminer
+     * si la règle /h2-console/** doit être ajoutée.
+     * - Dev (H2) : spring.h2.console.enabled=true → permitAll()
+     * - Prod (PostgreSQL) : spring.h2.console.enabled=false → règle absente
+     *   → les requêtes /h2-console/** sont rejetées par authenticated()
+     *   → plus de NoResourceFoundException dans les logs
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    @Value("${spring.h2.console.enabled:false}")
+    private boolean h2ConsoleEnabled;
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
@@ -161,78 +197,86 @@ public class SecurityConfig {
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 // AUTORISATIONS PAR URL :
-                .authorizeHttpRequests(auth -> auth
-                        // Endpoints publics (pas de JWT requis)
-                        .requestMatchers("/api/v1/auth/**").permitAll()
-                        // ═══════════════════════════════════════════════════════
-                        // [Section 6] CORRECTIF : Console H2 — permitAll()
-                        // ═══════════════════════════════════════════════════════
-                        //
-                        // AVANT (bug) : .hasRole("ADMIN")
-                        // → La console H2 ne peut pas envoyer de JWT token
-                        //   (c'est une interface HTML qui s'authentifie via
-                        //    les paramètres de connexion H2, pas via Spring Security)
-                        // → Spring Security redirige vers /login → boucle infinie
-                        //
-                        // APRÈS (correction) : .permitAll()
-                        // → La console H2 est accessible sans JWT
-                        // → L'authentification H2 est gérée par H2 lui-même
-                        //   (spring.datasource.url avec user/password)
-                        //
-                        // ⚠️ SÉCURITÉ EN PRODUCTION :
-                        // → Désactiver la console H2 : spring.h2.console.enabled=false
-                        // → Ou retirer cette ligne si H2 n'est pas utilisé en prod
-                        // → En production, on utilise PostgreSQL, pas H2
-                        // ═══════════════════════════════════════════════════════
-                        .requestMatchers("/h2-console/**").permitAll()
-                        // Swagger UI : public pour la documentation API
-                        .requestMatchers(
-                                "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**",
-                                "/v3/api-docs.yaml", "/swagger-resources/**", "/webjars/**"
-                        ).permitAll()
-                        // ═══════════════════════════════════════════════════════
-                        // [SPRINT 5] CORRECTION : Actuator health — permitAll()
-                        // ═══════════════════════════════════════════════════════
-                        // Le healthcheck Docker accède à /actuator/health SANS JWT.
-                        // Sans cette règle, il reçoit 401 → conteneur unhealthy.
-                        // On n'expose QUE health et info (pas metrics, env, beans).
-                        // ═══════════════════════════════════════════════════════
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-                        // ═══════════════════════════════════════════════════════
-                        // PHASE 3 — FEATURE 1 : WebSocket endpoint
-                        // ═══════════════════════════════════════════════════════
-                        // Le endpoint /ws est l'URL de connexion WebSocket (SockJS).
-                        // Il doit être accessible SANS JWT car la poignée de main
-                        // (handshake) WebSocket se fait avant que le client puisse
-                        // envoyer des headers d'authentification.
-                        //
-                        // NOTE : L'authentification WebSocket est gérée séparément
-                        // via un intercepteur STOMP qui vérifie le JWT dans les
-                        // headers de la connexion STOMP (CONNECT frame).
-                        //
-                        // /ws/** : le endpoint SockJS génère des sous-chemins
-                        //   /ws/info, /ws/{server}/{session}/websocket, etc.
-                        // ═══════════════════════════════════════════════════════
-                        .requestMatchers("/ws/**").permitAll()
-                        // ═══════════════════════════════════════════════════════
-                        // ENDPOINTS SECTION 6 — Couverts par anyRequest().authenticated()
-                        // ═══════════════════════════════════════════════════════
-                        // Pas besoin de règles spécifiques pour :
-                        // - /api/v1/tasks/{id}/comments/**  → Couvert par authenticated()
-                        // - /api/v1/tasks/{id}/activity    → Couvert par authenticated()
-                        // - /api/v1/activity              → Couvert par authenticated()
-                        // - /api/v1/dashboard/**          → Couvert par authenticated()
-                        // - /api/v1/admin/**              → Couvert par authenticated()
-                        //                                   + @PreAuthorize("hasRole('ADMIN')")
-                        //                                   sur les méthodes AdminController
-                        //
-                        // Le RBAC métier (USER/MANAGER/ADMIN) est géré PROGRAMMATIQUEMENT
-                        // dans les services (TaskManager, CommentService, DashboardService)
-                        // et via @PreAuthorize sur AdminController.
-                        // ═══════════════════════════════════════════════════════
-                        // Tout le reste : authentification JWT requise
-                        .anyRequest().authenticated()
-                )
+                .authorizeHttpRequests(auth -> {
+                    // Endpoints publics (pas de JWT requis)
+                    auth.requestMatchers("/api/v1/auth/**").permitAll();
+
+                    // ═══════════════════════════════════════════════════════
+                    // CORRECTION PHASE 3 : Console H2 conditionnelle
+                    // ═══════════════════════════════════════════════════════
+                    //
+                    // AVANT (bug en profil postgres) :
+                    //   .requestMatchers("/h2-console/**").permitAll()
+                    //   → H2 désactivé mais la règle laisse passer
+                    //   → NoResourceFoundException + stack trace ERROR
+                    //
+                    // APRÈS (correction) :
+                    //   La règle n'est ajoutée QUE si H2 est activé.
+                    //   En profil postgres, les requêtes /h2-console/**
+                    //   sont rejetées par anyRequest().authenticated()
+                    //   avec un 401 propre (pas de stack trace).
+                    //
+                    // En dev (profil default, H2 activé) :
+                    //   spring.h2.console.enabled=true → règle ajoutée
+                    //   → La console H2 est accessible sans JWT
+                    //
+                    // En prod (profil postgres, H2 désactivé) :
+                    //   spring.h2.console.enabled=false → règle absente
+                    //   → Les requêtes /h2-console/** reçoivent 401
+                    // ═══════════════════════════════════════════════════════
+                    if (h2ConsoleEnabled) {
+                        auth.requestMatchers("/h2-console/**").permitAll();
+                    }
+
+                    // Swagger UI : public pour la documentation API
+                    auth.requestMatchers(
+                            "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**",
+                            "/v3/api-docs.yaml", "/swagger-resources/**", "/webjars/**"
+                    ).permitAll();
+                    // ═══════════════════════════════════════════════════════
+                    // [SPRINT 5] CORRECTION : Actuator health — permitAll()
+                    // ═══════════════════════════════════════════════════════
+                    // Le healthcheck Docker accède à /actuator/health SANS JWT.
+                    // Sans cette règle, il reçoit 401 → conteneur unhealthy.
+                    // On n'expose QUE health et info (pas metrics, env, beans).
+                    // ═══════════════════════════════════════════════════════
+                    auth.requestMatchers("/actuator/health", "/actuator/info").permitAll();
+                    // ═══════════════════════════════════════════════════════
+                    // PHASE 3 — FEATURE 1 : WebSocket endpoint
+                    // ═══════════════════════════════════════════════════════
+                    // Le endpoint /ws est l'URL de connexion WebSocket (SockJS).
+                    // Il doit être accessible SANS JWT car la poignée de main
+                    // (handshake) WebSocket se fait avant que le client puisse
+                    // envoyer des headers d'authentification.
+                    //
+                    // NOTE : L'authentification WebSocket est gérée séparément
+                    // via un intercepteur STOMP qui vérifie le JWT dans les
+                    // headers de la connexion STOMP (CONNECT frame).
+                    //
+                    // /ws/** : le endpoint SockJS génère des sous-chemins
+                    //   /ws/info, /ws/{server}/{session}/websocket, etc.
+                    // ═══════════════════════════════════════════════════════
+                    auth.requestMatchers("/ws/**").permitAll();
+                    // ═══════════════════════════════════════════════════════
+                    // ENDPOINTS SECTION 6 — Couverts par anyRequest().authenticated()
+                    // ═══════════════════════════════════════════════════════
+                    // Pas besoin de règles spécifiques pour :
+                    // - /api/v1/tasks/{id}/comments/**  → Couvert par authenticated()
+                    // - /api/v1/tasks/{id}/activity    → Couvert par authenticated()
+                    // - /api/v1/activity              → Couvert par authenticated()
+                    // - /api/v1/dashboard/**          → Couvert par authenticated()
+                    // - /api/v1/admin/**              → Couvert par authenticated()
+                    //                                   + @PreAuthorize("hasRole('ADMIN')")
+                    //                                   sur les méthodes AdminController
+                    // - /api/v1/notifications/**      → Couvert par authenticated()
+                    //
+                    // Le RBAC métier (USER/MANAGER/ADMIN) est géré PROGRAMMATIQUEMENT
+                    // dans les services (TaskManager, CommentService, DashboardService)
+                    // et via @PreAuthorize sur AdminController.
+                    // ═══════════════════════════════════════════════════════
+                    // Tout le reste : authentification JWT requise
+                    auth.anyRequest().authenticated();
+                })
                 // ═══════════════════════════════════════════════════════
                 // CORRECTIF CRITIQUE : AuthenticationEntryPoint personnalisé
                 // ═══════════════════════════════════════════════════════
