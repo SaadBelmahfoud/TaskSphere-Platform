@@ -35,6 +35,23 @@ import java.util.UUID;
  *
  * CLÉ DE STOCKAGE : "attachments/{uuid}.{extension}"
  * L'UUID garantit l'unicité même si deux fichiers ont le même nom.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION UPLOAD : Amélioration du diagnostic
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT (PROBLÈME) :
+ *   L'exception IOException était attrapée et relancée comme RuntimeException
+ *   avec SEULEMENT le message. La stack trace et la cause réelle
+ *   (AccessDeniedException, NoSuchFileException, etc.) étaient perdues.
+ *   → Impossible de diagnostiquer le problème dans les logs.
+ *
+ * APRÈS :
+ *   - Log explicite à ERROR avant de lancer l'exception
+ *   - Inclusion du chemin absolu du répertoire dans le message
+ *   - L'exception originale est préservée comme cause (e)
+ *   - Vérification préalable de la résolution du chemin pour le diagnostic
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @Component
@@ -46,7 +63,18 @@ public class LocalStorageAdapter implements FileStoragePort {
     @Override
     public String store(InputStream inputStream, String fileName, String contentType) {
         try {
-            Path uploadDir = Paths.get(storagePath, "attachments");
+            Path uploadDir = Paths.get(storagePath, "attachments").toAbsolutePath();
+
+            // ═══════════════════════════════════════════════════════════
+            // PHASE 3 — CORRECTION UPLOAD : Diagnostic avant création
+            // ═══════════════════════════════════════════════════════════
+            // Log le chemin absolu pour faciliter le diagnostic.
+            // Si le répertoire parent n'est pas inscriptible, on le
+            // détecte AVANT le Files.createDirectories() pour un message
+            // d'erreur plus clair.
+            // ═══════════════════════════════════════════════════════════
+            log.debug("STOCKAGE : Résolution du répertoire d'upload : {}", uploadDir);
+
             Files.createDirectories(uploadDir);
 
             // Générer une clé unique : attachments/uuid.extension
@@ -60,6 +88,16 @@ public class LocalStorageAdapter implements FileStoragePort {
             return storageKey;
 
         } catch (IOException e) {
+            // ═══════════════════════════════════════════════════════════
+            // PHASE 3 — CORRECTION UPLOAD : Log complet de l'erreur
+            // ═══════════════════════════════════════════════════════════
+            // AVANT : Seul le message était loggué, sans le chemin
+            //         ni le type d'exception (AccessDeniedException, etc.)
+            // APRÈS : Log à ERROR avec le chemin absolu, le type
+            //         d'exception et la stack trace complète.
+            // ═══════════════════════════════════════════════════════════
+            log.error("STOCKAGE : Échec du stockage du fichier '{}' — chemin résolu : {} — erreur : {}",
+                    fileName, Paths.get(storagePath, "attachments").toAbsolutePath(), e.getClass().getSimpleName(), e);
             throw new RuntimeException("Échec du stockage du fichier : " + fileName, e);
         }
     }

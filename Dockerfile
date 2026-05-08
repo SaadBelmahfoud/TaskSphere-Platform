@@ -87,11 +87,43 @@ COPY --from=build /app/tasksphere-core/target/*.jar app.jar
 # Changer le propriétaire du fichier
 RUN chown tasksphere:tasksphere app.jar
 
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 3 — CORRECTION UPLOAD : Créer le répertoire de stockage
+# ═══════════════════════════════════════════════════════════════════
+#
+# AVANT (CRITIQUE) :
+#   Aucun répertoire /app/uploads n'était créé.
+#   L'utilisateur non-root "tasksphere" ne pouvait PAS créer
+#   /app/uploads/attachments car /app est propriété de root.
+#   → Files.createDirectories() → AccessDeniedException
+#   → "Échec du stockage du fichier"
+#
+# APRÈS :
+#   On crée /app/uploads/attachments AVANT le USER tasksphere
+#   et on donne la propriété à l'utilisateur tasksphere.
+#   Le runtime peut alors écrire dans ce répertoire.
+#
+# L'instruction RUN s'exécute en tant que root (avant USER tasksphere).
+# Le chown -R donne la propriété récursive du répertoire uploads.
+# ═══════════════════════════════════════════════════════════════════
+RUN mkdir -p /app/uploads/attachments && \
+    chown -R tasksphere:tasksphere /app/uploads
+
 # Utiliser l'utilisateur non-root
 USER tasksphere
 
 # Port exposé par l'application
 EXPOSE 8080
+
+# ═══════════════════════════════════════════════════════════════════
+# PHASE 3 — FEATURE 6 : Volume pour le stockage des uploads
+# ═══════════════════════════════════════════════════════════════════
+# Déclare /app/uploads comme volume Docker.
+# Cela permet de monter un volume hôte ou un volume nommé pour
+# persister les fichiers uploadés entre les redémarrages du conteneur.
+# Sans volume, les fichiers sont perdus quand le conteneur est recréé.
+# ═══════════════════════════════════════════════════════════════════
+VOLUME /app/uploads
 
 # Variables d'environnement par défaut
 # Elles peuvent être surchargées au démarrage du conteneur

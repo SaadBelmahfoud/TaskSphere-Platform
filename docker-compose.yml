@@ -130,6 +130,32 @@ services:
       INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:?INIT_USER_PASSWORD must be set in .env}
       # SPRINT 5 : CORS — Origines autorisées
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,https://localhost:443}
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 3 — CORRECTION UPLOAD : Chemin de stockage explicite
+      # ═══════════════════════════════════════════════════════════════════
+      #
+      # AVANT (PROBLÈME) :
+      #   Aucune variable STORAGE_PATH n'était passée au conteneur.
+      #   L'application utilisait le default "./uploads" qui résout
+      #   en /app/uploads — mais /app est propriété de root,
+      #   et l'utilisateur tasksphere ne peut pas y créer de répertoire.
+      #
+      # APRÈS :
+      #   STORAGE_PATH=/app/uploads est passé explicitement.
+      #   Le répertoire /app/uploads/attachments est pré-créé dans
+      #   le Dockerfile avec les bonnes permissions (propriété de tasksphere).
+      #   Le volume Docker assure la persistance des fichiers.
+      # ═══════════════════════════════════════════════════════════════════
+      STORAGE_PATH: /app/uploads
+    volumes:
+      # ═══════════════════════════════════════════════════════════════════
+      # PHASE 3 — CORRECTION UPLOAD : Volume pour les uploads
+      # ═══════════════════════════════════════════════════════════════════
+      # Sans volume, les fichiers uploadés sont stockés dans le système
+      # de fichiers éphémère du conteneur → perdus au redémarrage.
+      # Le volume nommé uploads_data persiste entre les recréations.
+      # ═══════════════════════════════════════════════════════════════════
+      - uploads_data:/app/uploads
     depends_on:
       # Le backend attend que PostgreSQL soit prêt avant de démarrer
       postgres:
@@ -249,6 +275,13 @@ volumes:
   # Les données sont stockées dans un volume Docker nommé.
   # Elles persistent même si le conteneur PostgreSQL est recréé.
   # Pour supprimer les données : docker compose down -v
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 3 — CORRECTION UPLOAD : Volume pour les fichiers uploadés
+  # ═══════════════════════════════════════════════════════════════════
+  # Volume nommé pour persister les pièces jointes entre les redémarrages.
+  # Le backend y écrit via STORAGE_PATH=/app/uploads.
+  # ═══════════════════════════════════════════════════════════════════
+  uploads_data:
 
 # ═════════════════════════════════════════════════════════
 # RÉSEAUX : Communication entre les conteneurs

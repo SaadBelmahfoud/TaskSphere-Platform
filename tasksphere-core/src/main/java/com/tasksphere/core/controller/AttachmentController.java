@@ -32,6 +32,21 @@ import java.util.Map;
  * GET    /api/v1/tasks/{taskId}/attachments → Liste les pièces jointes
  * GET    /api/v1/attachments/{id}/download  → Télécharge une pièce jointe
  * DELETE /api/v1/attachments/{id}           → Supprime une pièce jointe
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION UPLOAD : Amélioration du diagnostic
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * AVANT (PROBLÈME) :
+ *   Le catch(Exception e) ne logguait que e.getMessage(), ce qui
+ *   masquait la cause racine (AccessDeniedException) et rendait
+ *   le diagnostic impossible.
+ *
+ * APRÈS :
+ *   - Log la stack trace complète à ERROR
+ *   - Inclut le nom du fichier dans le message d'erreur
+ *   - Le message retourné au frontend reste générique (sécurité)
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
 @RestController
@@ -74,7 +89,19 @@ public class AttachmentController {
             return ResponseEntity.badRequest()
                     .body(Map.of("message", e.getMessage()));
         } catch (Exception e) {
-            log.error("CONTROLLER : Échec de l'upload — {}", e.getMessage());
+            // ═══════════════════════════════════════════════════════════
+            // PHASE 3 — CORRECTION UPLOAD : Log complet de l'exception
+            // ═══════════════════════════════════════════════════════════
+            // AVANT : log.error("CONTROLLER : Échec de l'upload — {}", e.getMessage())
+            //   → Seul le message "Échec du stockage du fichier : xxx.pdf" était loggué
+            //   → La cause (AccessDeniedException) était perdue
+            //
+            // APRÈS : Log la stack trace complète pour un diagnostic rapide.
+            //   Le message frontend reste générique pour ne pas exposer
+            //   des détails internes (chemins, permissions, etc.)
+            // ═══════════════════════════════════════════════════════════
+            log.error("CONTROLLER : Échec de l'upload du fichier '{}' pour la tâche {}",
+                    file.getOriginalFilename(), taskId, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("message", "Échec de l'upload du fichier"));
         }
