@@ -1,6 +1,8 @@
 package com.tasksphere.core.config;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
@@ -68,10 +70,39 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  *         showToast(notification.description);
  *     });
  * });
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION W1 : Enregistrement du StompAuthChannelInterceptor
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * PROBLÈME :
+ *   convertAndSendToUser(username, "/queue/notifications", ...) ne
+ *   pouvait PAS router les messages car aucun Principal n'était
+ *   attaché aux sessions STOMP. L'intercepteur d'authentification
+ *   mentionné dans SecurityConfig (ligne 252-254) n'existait pas.
+ *
+ * SOLUTION :
+ *   1. Créer StompAuthChannelInterceptor (nouveau fichier)
+ *   2. L'enregistrer ici via configureClientInboundChannel()
+ *   → Chaque frame CONNECT STOMP sera authentifiée via JWT
+ *   → Le Principal sera disponible pour le routage utilisateur
+ * ═══════════════════════════════════════════════════════════════════
  */
 @Configuration
 @EnableWebSocketMessageBroker
+@RequiredArgsConstructor
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION W1 : Injection de l'intercepteur STOMP
+     * ═══════════════════════════════════════════════════════════════════
+     * StompAuthChannelInterceptor valide le JWT dans les headers de la
+     * frame STOMP CONNECT et crée un Principal authentifié.
+     * Sans cet intercepteur, convertAndSendToUser() ne fonctionne PAS.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final StompAuthChannelInterceptor stompAuthChannelInterceptor;
 
     /**
      * Configure le broker de messages STOMP.
@@ -144,5 +175,38 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns("*")
                 .withSockJS();
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION W1 : Enregistrement de l'intercepteur STOMP
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * PRINCIPE — configureClientInboundChannel() :
+     * Cette méthode permet d'ajouter des ChannelInterceptors au canal
+     * de messages STOMP entrants (client → serveur). C'est l'équivalent
+     * de addFilterBefore() pour les filtres HTTP.
+     *
+     * FLUX D'UN MESSAGE STOMP ENTRANT :
+     * ┌──────────────┐    ┌─────────────────────────┐    ┌──────────────┐
+     * │  Client WS   │ →  │  clientInboundChannel    │ →  │  Broker      │
+     * │  (frontend)  │    │  ┌─ StompAuthInterceptor  │    │  (routing)   │
+     * │              │    │  └─ Autres intercepteurs  │    │              │
+     * └──────────────┘    └─────────────────────────┘    └──────────────┘
+     *
+     * L'intercepteur est appelé AVANT que le message ne soit traité
+     * par le broker. Pour les frames CONNECT, il authentifie
+     * l'utilisateur avant que Spring n'établisse la session STOMP.
+     *
+     * SANS CETTE MÉTHODE :
+     * - StompAuthChannelInterceptor existe mais n'est JAMAIS appelé
+     * - Aucun Principal n'est attaché aux sessions STOMP
+     * - convertAndSendToUser() ne peut PAS router les messages
+     * - Les notifications temps réel sont PERDUES
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    @Override
+    public void configureClientInboundChannel(ChannelRegistration registration) {
+        registration.interceptors(stompAuthChannelInterceptor);
     }
 }
