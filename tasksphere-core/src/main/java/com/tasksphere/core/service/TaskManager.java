@@ -69,18 +69,25 @@ import java.util.Optional;
  * PHASE 3 — FEATURE 3 : Gestion des tags lors de la création/modification
  * ═══════════════════════════════════════════════════════════════════
  * Le TaskManager gère maintenant l'association des tags aux tâches
- * lors de la création et de la modification. Il délègue la persistance
- * des associations (table task_tags) au TagPort.
+ * lors de la création et de la modification.
  *
- * PRINCIPE — SYNCHRONISATION DES TAGS (modification) :
- * ─────────────────────────────────────────────────────
- * Lors d'une modification, si tagIds est fourni (non null), on
- * synchronise les tags : on ajoute les nouveaux et on retire les
- * anciens. Ce n'est PAS un ajout incrémental, c'est un REMPLACEMENT
- * complet de la liste. Cela correspond au comportement REST standard.
+ * ═══════════════════════════════════════════════════════════════════
+ * PHASE 3 — CORRECTION T1 : Utilisation de TagService au lieu de TagPort
+ * ═══════════════════════════════════════════════════════════════════
  *
- * Si tagIds est null → les tags ne sont PAS modifiés (PATCH sémantique).
- * Si tagIds est une liste vide → tous les tags sont retirés.
+ * PROBLÈME :
+ *   TaskManager appelait directement tagPort.addTagToTask() et
+ *   tagPort.removeTagFromTask(). Ces appels ne publiaient PAS
+ *   d'événements d'audit → les actions TAG_ADDED_TO_TASK et
+ *   TAG_REMOVED_FROM_TASK n'apparaissaient JAMAIS dans l'Activity Log.
+ *
+ * SOLUTION :
+ *   Remplacer tagPort.addTagToTask() par tagService.addTagToTask()
+ *   et tagPort.removeTagFromTask() par tagService.removeTagFromTask().
+ *   TagService publie les événements d'audit pour chaque opération.
+ *
+ *   TagPort reste injecté pour :
+ *   - tagPort.findTagsByTaskId() : lecture seule (pas d'audit nécessaire)
  * ═══════════════════════════════════════════════════════════════════
  */
 @Slf4j
@@ -108,9 +115,22 @@ public class TaskManager {
      * ═══════════════════════════════════════════════════════════════════
      * Permet de gérer les associations tag ↔ tâche (table task_tags)
      * lors de la création et de la modification des tâches.
+     * Utilisé uniquement pour la LECTURE (findTagsByTaskId).
      * ═══════════════════════════════════════════════════════════════════
      */
     private final TagPort tagPort;
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * PHASE 3 — CORRECTION T1 : Injection du TagService
+     * ═══════════════════════════════════════════════════════════════════
+     * TagService publie des événements d'audit pour les opérations
+     * d'association/dissociation de tags (TAG_ADDED_TO_TASK,
+     * TAG_REMOVED_FROM_TASK). Contrairement à TagPort qui ne fait
+     * que persister, TagService assure la traçabilité complète.
+     * ═══════════════════════════════════════════════════════════════════
+     */
+    private final TagService tagService;
 
     // ═══════════════════════════════════════════════════════
     // CRÉATION DE TÂCHE
@@ -171,17 +191,16 @@ public class TaskManager {
         eventPublisher.publishTaskCreated(TaskCreatedEvent.of(savedTask.id(), savedTask.title()));
 
         // ═══════════════════════════════════════════════════════════════════
-        // PHASE 3 — FEATURE 3 : Association des tags à la création
+        // PHASE 3 — CORRECTION T1 : Association des tags via TagService
         // ═══════════════════════════════════════════════════════════════════
-        // Si des tagIds sont fournis, on les associe un par un à la tâche.
-        // Chaque association crée une ligne dans la table task_tags.
-        // On vérifie d'abord que le tag existe avant de l'associer.
+        // AVANT : tagPort.addTagToTask() → pas d'audit TAG_ADDED_TO_TASK
+        // APRÈS : tagService.addTagToTask() → audit publié automatiquement
         // ═══════════════════════════════════════════════════════════════════
         if (tagIds != null && !tagIds.isEmpty()) {
             for (String tagId : tagIds) {
                 if (tagId != null && !tagId.isBlank()) {
                     try {
-                        tagPort.addTagToTask(savedTask.id(), tagId);
+                        tagService.addTagToTask(savedTask.id(), tagId, currentUsername);
                         log.debug("SERVICE : Tag {} associé à la tâche {}", tagId, savedTask.id());
                     } catch (Exception e) {
                         // Si le tag n'existe pas ou s'il est déjà associé, on logue
@@ -358,14 +377,18 @@ public class TaskManager {
         Task savedTask = persistencePort.save(updatedTask);
 
         // ═══════════════════════════════════════════════════════════════════
-        // PHASE 3 — FEATURE 3 : Synchronisation des tags
+        // PHASE 3 — CORRECTION T1 : Synchronisation des tags via TagService
         // ═══════════════════════════════════════════════════════════════════
-        // Si tagIds est fourni (non null), on synchronise les associations.
-        // PRINCIPE : on compare les tags actuels avec les tags demandés,
-        // puis on ajoute les nouveaux et on retire les anciens.
+        // AVANT : tagPort.addTagToTask() / tagPort.removeTagFromTask()
+        //   → Pas d'audit TAG_ADDED_TO_TASK / TAG_REMOVED_FROM_TASK
+        //
+        // APRÈS : tagService.addTagToTask() / tagService.removeTagFromTask()
+        //   → Audit publié automatiquement par TagService
+        //
+        // On garde tagPort.findTagsByTaskId() pour la lecture (pas d'audit nécessaire).
         // ═══════════════════════════════════════════════════════════════════
         if (tagIds != null) {
-            // Récupérer les tags actuels de la tâche
+            // Récupérer les tags actuels de la tâche (lecture via TagPort)
             List<Tag> currentTags = tagPort.findTagsByTaskId(taskId);
             List<String> currentTagIds = currentTags.stream()
                     .map(Tag::id)
@@ -381,10 +404,10 @@ public class TaskManager {
                     .filter(id -> !tagIds.contains(id))
                     .toList();
 
-            // Appliquer les ajouts
+            // Appliquer les ajouts via TagService (avec audit)
             for (String tagIdToAdd : tagsToAdd) {
                 try {
-                    tagPort.addTagToTask(taskId, tagIdToAdd);
+                    tagService.addTagToTask(taskId, tagIdToAdd, currentUsername);
                     log.debug("SERVICE : Tag {} ajouté à la tâche {}", tagIdToAdd, taskId);
                 } catch (Exception e) {
                     log.warn("SERVICE : Impossible d'ajouter le tag {} à la tâche {} — {}",
@@ -392,10 +415,10 @@ public class TaskManager {
                 }
             }
 
-            // Appliquer les retraits
+            // Appliquer les retraits via TagService (avec audit)
             for (String tagIdToRemove : tagsToRemove) {
                 try {
-                    tagPort.removeTagFromTask(taskId, tagIdToRemove);
+                    tagService.removeTagFromTask(taskId, tagIdToRemove, currentUsername);
                     log.debug("SERVICE : Tag {} retiré de la tâche {}", tagIdToRemove, taskId);
                 } catch (Exception e) {
                     log.warn("SERVICE : Impossible de retirer le tag {} de la tâche {} — {}",
