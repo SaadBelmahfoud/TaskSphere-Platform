@@ -44,7 +44,6 @@ public record AssignTaskRequest(
          * Pour l'instant, la désassignation se fait via une valeur vide
          * qui sera gérée dans le contrôleur.
          */
-        @NotBlank(message = "L'identifiant de l'assignataire est obligatoire")
         @Email(message = "L'identifiant de l'assignataire doit être un email valide")
         String assigneeId
 ) {}
